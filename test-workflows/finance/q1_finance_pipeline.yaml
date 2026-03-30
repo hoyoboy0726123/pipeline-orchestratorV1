@@ -1,0 +1,31 @@
+name: 科技公司 Q1 財務自動化流程
+validate: false
+
+steps:
+  - name: Stage1｜產生原始財務資料
+    batch: python3 ~/LangGraph/pipeline-app/test-workflows/finance/stage1_generate_transactions.py
+    timeout: 60
+    output:
+      path: ~/ai_output/finance/raw_transactions.xlsx
+      expect: Excel 檔案，含 Transaction_ID、Date、Amount 等欄位，約 504 筆資料
+
+  - name: Stage2｜資料驗證與清洗
+    batch: python3 ~/LangGraph/pipeline-app/test-workflows/finance/stage2_clean_data.py
+    timeout: 60
+    output:
+      path: ~/ai_output/finance/cleaned_transactions.xlsx
+      expect: Excel 檔案，僅含 Approved 狀態的乾淨資料，含 Month 和 Quarter 欄位
+
+  - name: Stage3｜財務分析彙總
+    batch: python3 ~/LangGraph/pipeline-app/test-workflows/finance/stage3_analyze_finance.py
+    timeout: 60
+    output:
+      path: ~/ai_output/finance/financial_summary.xlsx
+      expect: 多工作表 Excel，含 KPI總覽、部門別收支、月份別趨勢、費用類別排名、收入來源結構
+
+  - name: Stage4｜管理報表產生
+    batch: python3 ~/LangGraph/pipeline-app/test-workflows/finance/stage4_generate_report.py
+    timeout: 60
+    output:
+      path: ~/ai_output/finance/Q1_financial_report.xlsx
+      expect: 格式化 Excel 報表，含封面、執行摘要等 6 個工作表，套用配色與樣式
