@@ -93,9 +93,11 @@ class PipelineDecisionRequest(BaseModel):
 
 @app.post("/pipeline/run")
 async def start_pipeline(req: PipelineRunRequest):
-    import yaml
+    import uuid, yaml
     from pipeline.models import PipelineConfig
     from pipeline.runner import run_pipeline
+    from pipeline.store import PipelineRun as PRun, get_store
+    from pipeline.logger import create_run_logger
     try:
         data = yaml.safe_load(req.yaml_content)
         config_dict = data.get("pipeline", data)
@@ -104,15 +106,22 @@ async def start_pipeline(req: PipelineRunRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"YAML 解析失敗：{e}")
 
-    run_id_holder: dict = {}
+    # 先建立 run 並存入 store，確保前端立刻能查詢
+    run_id = str(uuid.uuid4())[:12]
+    _, log_path = create_run_logger(run_id, config.name)
+    run = PRun(
+        run_id=run_id,
+        pipeline_name=config.name,
+        config_dict=config.model_dump(),
+        telegram_chat_id=0,
+        log_path=log_path,
+    )
+    get_store().save(run)
 
-    async def _bg():
-        run_id = await run_pipeline(config.model_dump(), chat_id=0)
-        run_id_holder["run_id"] = run_id
+    # 背景執行（runner 看到已存在的 run_id 會恢復執行）
+    asyncio.create_task(run_pipeline(config.model_dump(), chat_id=0, run_id=run_id))
 
-    asyncio.create_task(_bg())
-    await asyncio.sleep(0.2)
-    return {"run_id": run_id_holder.get("run_id", "starting"), "message": f"Pipeline '{config.name}' 已啟動"}
+    return {"run_id": run_id, "message": f"Pipeline '{config.name}' 已啟動"}
 
 
 @app.get("/pipeline/runs")

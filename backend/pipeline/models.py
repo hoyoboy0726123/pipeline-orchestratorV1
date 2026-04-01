@@ -28,8 +28,8 @@ from pydantic import BaseModel
 
 class StepOutput(BaseModel):
     """輸出檔案的預期描述（用自然語言，LLM 負責驗證）"""
-    path: str
-    expect: str
+    path: Optional[str] = None
+    expect: str = ""
 
 
 class PipelineStep(BaseModel):

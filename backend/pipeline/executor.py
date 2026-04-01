@@ -6,7 +6,20 @@
 """
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
+
+
+def _clean_env() -> dict:
+    """移除 venv 對 PATH 的影響，讓 subprocess 使用系統 python3 而非 venv 的 python3。"""
+    env = os.environ.copy()
+    venv = env.pop("VIRTUAL_ENV", None)
+    env.pop("PYTHONHOME", None)
+    if venv:
+        venv_bin = os.path.join(venv, "bin")
+        paths = [p for p in env.get("PATH", "").split(os.pathsep) if p != venv_bin]
+        env["PATH"] = os.pathsep.join(paths)
+    return env
 
 
 @dataclass
@@ -44,6 +57,7 @@ async def execute_step(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_clean_env(),
         )
 
         async def _drain(stream: asyncio.StreamReader, buf: list[str], tag: str):
