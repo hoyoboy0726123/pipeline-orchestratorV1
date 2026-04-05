@@ -211,6 +211,91 @@ export async function deletePipelineSchedule(taskId: string): Promise<void> {
   if (!res.ok) throw new Error('刪除排程失敗')
 }
 
+// ── Settings ─────────────────────────────────────────────────
+export interface ModelSettings {
+  provider: 'groq' | 'ollama'
+  model: string
+  ollama_base_url: string
+  ollama_thinking: 'auto' | 'on' | 'off'
+  ollama_num_ctx: number
+}
+
+export interface ModelOption {
+  id: string
+  label: string
+}
+
+export interface AvailableModels {
+  groq: ModelOption[]
+  ollama: ModelOption[]
+  ollama_base_url: string
+  ollama_error: string | null
+}
+
+export async function getModelSettings(): Promise<ModelSettings> {
+  const res = await fetch(`${BASE}/settings/model`)
+  if (!res.ok) throw new Error('讀取設定失敗')
+  return res.json()
+}
+
+export async function saveModelSettings(s: ModelSettings): Promise<ModelSettings> {
+  const res = await fetch(`${BASE}/settings/model`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(s),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? '儲存失敗')
+  }
+  return res.json()
+}
+
+export async function getAvailableModels(): Promise<AvailableModels> {
+  const res = await fetch(`${BASE}/settings/models/available`)
+  if (!res.ok) throw new Error('讀取模型清單失敗')
+  return res.json()
+}
+
+// ── Recipe Book ─────────────────────────────────────────────
+export interface Recipe {
+  recipe_id: string
+  pipeline_id: string
+  step_name: string
+  task_hash: string
+  input_fingerprints: Record<string, string>
+  output_path: string | null
+  code: string
+  python_version: string
+  success_count: number
+  fail_count: number
+  created_at: number
+  last_success_at: number
+  last_fail_at: number
+  avg_runtime_sec: number
+  disabled: boolean
+}
+
+export async function listRecipes(): Promise<Recipe[]> {
+  const res = await fetch(`${BASE}/recipes`)
+  if (!res.ok) throw new Error('讀取 recipes 失敗')
+  return res.json()
+}
+
+export async function deleteRecipe(pipelineName: string, stepName: string): Promise<void> {
+  const res = await fetch(`${BASE}/recipes/${encodeURIComponent(pipelineName)}/${encodeURIComponent(stepName)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error('刪除 recipe 失敗')
+}
+
+export async function deletePipelineRecipes(pipelineName: string): Promise<number> {
+  const res = await fetch(`${BASE}/recipes/${encodeURIComponent(pipelineName)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('刪除 pipeline recipes 失敗')
+  const data = await res.json()
+  return data.deleted_count ?? 0
+}
+
 export async function pipelineChat(messages: Array<{ role: 'user' | 'assistant'; content: string }>): Promise<{
   reply: string
   has_yaml: boolean

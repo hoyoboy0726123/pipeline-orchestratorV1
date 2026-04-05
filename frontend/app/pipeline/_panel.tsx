@@ -220,57 +220,98 @@ export default function NodeConfigPanel({ node, onUpdate, onClose, onDelete, aiE
             />
           </div>
 
-          {/* Batch command */}
+          {/* Skill Mode Toggle */}
           <div>
-            <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1.5">執行指令</label>
-            <div className="flex gap-1.5 mb-1.5">
-              <select
-                value={selectedPrefix}
-                onChange={e => {
-                  const p = e.target.value
-                  setSelectedPrefix(p)
-                  if (filePath) upd({ batch: p ? `${p} ${filePath}` : filePath })
-                }}
-                className="shrink-0 border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-white text-gray-700 outline-none focus:border-indigo-400 cursor-pointer"
-              >
-                {EXEC_PREFIXES.map((p, i) => (
-                  <option key={i} value={p.value}>{p.label}</option>
-                ))}
-              </select>
-              <span className="text-gray-300 text-sm self-center">+</span>
-              <input
-                value={splitBatch(data.batch).filePath}
-                onChange={e => {
-                  const fp = e.target.value
-                  upd({ batch: selectedPrefix ? `${selectedPrefix} ${fp}` : fp })
-                }}
-                placeholder="選擇或輸入檔案路徑"
-                className={`${inputCls} flex-1`}
-              />
-              <button
-                onClick={() => setBrowserTarget('batch')}
-                className="shrink-0 w-8 h-8 flex items-center justify-center border border-gray-200 rounded-lg hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 transition-colors"
-              ><FolderOpen className="w-3.5 h-3.5" /></button>
-            </div>
-            {data.batch && (
-              <div className="text-xs text-gray-400 font-mono bg-gray-50 rounded-lg px-2.5 py-1.5 truncate">
-                ▶ {data.batch}
-              </div>
-            )}
-            {/* Venv toggle */}
-            {pyPath && (
-              <label className="flex items-center gap-2 mt-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={isUsingVenv}
-                  onChange={e => handleVenvToggle(e.target.checked)}
-                  disabled={venvChecking}
-                  className="w-3.5 h-3.5 rounded accent-indigo-500"
-                />
-                <span className="text-xs text-gray-500">
-                  {venvChecking ? '偵測中…' : '使用 .venv 虛擬環境'}
-                </span>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                {data.skillMode ? '🔬 Skill 模式' : '執行指令'}
               </label>
+              <button
+                type="button"
+                onClick={() => upd({ skillMode: !data.skillMode })}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                  data.skillMode ? 'bg-purple-500' : 'bg-gray-300'
+                }`}
+                title={data.skillMode ? '切換為手動指令' : '切換為 Skill 模式（自然語言）'}
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                    data.skillMode ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {data.skillMode ? (
+              /* Skill mode: natural language textarea */
+              <>
+                <textarea
+                  rows={4}
+                  value={data.batch}
+                  onChange={e => upd({ batch: e.target.value })}
+                  placeholder={'用自然語言描述要執行的任務…\n例如：產生一份包含 100 筆隨機用戶資料的 CSV，欄位包含 name、email、age'}
+                  className={`${inputCls} resize-none !font-sans leading-relaxed`}
+                />
+                <div className="mt-1.5 p-2 rounded-lg bg-purple-50 border border-purple-200">
+                  <p className="text-xs text-purple-700">
+                    <span className="font-semibold">Skill 模式：</span>AI 會自主撰寫並執行程式碼來完成任務
+                  </p>
+                  <p className="text-xs text-purple-500 mt-0.5">可用工具：run_python · run_shell · read_file</p>
+                </div>
+              </>
+            ) : (
+              /* Normal mode: prefix + file path */
+              <>
+                <div className="flex gap-1.5 mb-1.5">
+                  <select
+                    value={selectedPrefix}
+                    onChange={e => {
+                      const p = e.target.value
+                      setSelectedPrefix(p)
+                      if (filePath) upd({ batch: p ? `${p} ${filePath}` : filePath })
+                    }}
+                    className="shrink-0 border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-white text-gray-700 outline-none focus:border-indigo-400 cursor-pointer"
+                  >
+                    {EXEC_PREFIXES.map((p, i) => (
+                      <option key={i} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+                  <span className="text-gray-300 text-sm self-center">+</span>
+                  <input
+                    value={splitBatch(data.batch).filePath}
+                    onChange={e => {
+                      const fp = e.target.value
+                      upd({ batch: selectedPrefix ? `${selectedPrefix} ${fp}` : fp })
+                    }}
+                    placeholder="選擇或輸入檔案路徑"
+                    className={`${inputCls} flex-1`}
+                  />
+                  <button
+                    onClick={() => setBrowserTarget('batch')}
+                    className="shrink-0 w-8 h-8 flex items-center justify-center border border-gray-200 rounded-lg hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 transition-colors"
+                  ><FolderOpen className="w-3.5 h-3.5" /></button>
+                </div>
+                {data.batch && (
+                  <div className="text-xs text-gray-400 font-mono bg-gray-50 rounded-lg px-2.5 py-1.5 truncate">
+                    ▶ {data.batch}
+                  </div>
+                )}
+                {/* Venv toggle */}
+                {pyPath && (
+                  <label className="flex items-center gap-2 mt-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={isUsingVenv}
+                      onChange={e => handleVenvToggle(e.target.checked)}
+                      disabled={venvChecking}
+                      className="w-3.5 h-3.5 rounded accent-indigo-500"
+                    />
+                    <span className="text-xs text-gray-500">
+                      {venvChecking ? '偵測中…' : '使用 .venv 虛擬環境'}
+                    </span>
+                  </label>
+                )}
+              </>
             )}
           </div>
 

@@ -28,6 +28,11 @@ function AiValidationNodeComponent({ data, selected }: NodeProps<AiValidationNod
       <div className="px-3 py-2 flex items-center gap-2" style={{ background: color }}>
         <span className="text-white text-sm">✦</span>
         <span className="text-white font-semibold text-sm flex-1 truncate">AI 驗證</span>
+        {data.skillMode && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/20 text-white font-medium">
+            Skill
+          </span>
+        )}
       </div>
 
       <div className="bg-white px-3 py-2.5">

@@ -29,9 +29,11 @@ function PipelineStepNode({ data, selected }: NodeProps<PipelineNode>) {
                : status === 'running'  ? '#3b82f6'
                : stepColor(data.index)
 
-  const batchPreview = data.batch
-    ? data.batch.replace(/^.*\/([^/\s]+\.py|[^/\s]+\.sh|[^/\s]+\.js)\s*$/, '$1')
-    : '尚未設定指令'
+  const batchPreview = data.skillMode
+    ? (data.batch || '尚未設定任務描述')
+    : (data.batch
+        ? data.batch.replace(/^.*\/([^/\s]+\.py|[^/\s]+\.sh|[^/\s]+\.js)\s*$/, '$1')
+        : '尚未設定指令')
 
   return (
     <div
@@ -64,6 +66,11 @@ function PipelineStepNode({ data, selected }: NodeProps<PipelineNode>) {
         <span className="text-white font-semibold text-sm flex-1 truncate leading-tight">
           {data.name}
         </span>
+        {data.skillMode && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/20 text-white font-medium shrink-0">
+            Skill
+          </span>
+        )}
         <span className={`text-sm shrink-0 ${STATUS_COLOR[status]}`}>
           {STATUS_ICON[status]}
         </span>
@@ -71,8 +78,8 @@ function PipelineStepNode({ data, selected }: NodeProps<PipelineNode>) {
 
       {/* ── Body ── */}
       <div className="bg-white px-3 py-2.5 space-y-1">
-        <p className="text-xs text-gray-500 font-mono truncate">
-          {batchPreview}
+        <p className={`text-xs truncate ${data.skillMode ? 'text-purple-600' : 'text-gray-500 font-mono'}`}>
+          {data.skillMode ? '🔬 ' : ''}{batchPreview}
         </p>
         {data.outputPath ? (
           <p className="text-xs text-gray-400 truncate">

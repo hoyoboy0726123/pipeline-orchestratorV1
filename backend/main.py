@@ -43,6 +43,106 @@ async def health():
     return {"status": "ok", "warnings": [f"{k} 未設定" for k in missing]}
 
 
+# ── Settings（模型選擇）─────────────────────────────────────
+# Groq 平台可選模型（2025 現役列表，按推理能力排序）
+_GROQ_MODEL_PRESETS = [
+    {"id": "meta-llama/llama-4-scout-17b-16e-instruct", "label": "Llama 4 Scout 17B（目前預設）"},
+    {"id": "meta-llama/llama-4-maverick-17b-128e-instruct", "label": "Llama 4 Maverick 17B（更強推理）"},
+    {"id": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B Versatile（推理強）"},
+    {"id": "llama-3.1-8b-instant", "label": "Llama 3.1 8B Instant（最快，最省配額）"},
+    {"id": "moonshotai/kimi-k2-instruct", "label": "Kimi K2 Instruct（code 強）"},
+    {"id": "deepseek-r1-distill-llama-70b", "label": "DeepSeek R1 Distill 70B（推理型）"},
+    {"id": "qwen/qwen3-32b", "label": "Qwen3 32B"},
+    {"id": "openai/gpt-oss-120b", "label": "GPT-OSS 120B"},
+    {"id": "openai/gpt-oss-20b", "label": "GPT-OSS 20B"},
+]
+
+
+@app.get("/settings/model")
+async def get_model_settings():
+    from settings import get_settings
+    return get_settings()
+
+
+class ModelSettingsRequest(BaseModel):
+    provider: str
+    model: str
+    ollama_base_url: Optional[str] = None
+    ollama_thinking: Optional[str] = None  # "auto" | "on" | "off"
+    ollama_num_ctx: Optional[int] = None
+
+
+@app.put("/settings/model")
+async def put_model_settings(req: ModelSettingsRequest):
+    from settings import update_settings
+    try:
+        return update_settings(
+            req.provider, req.model, req.ollama_base_url, req.ollama_thinking, req.ollama_num_ctx
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/settings/models/available")
+async def get_available_models():
+    """列出 Groq 預設模型 + 本機 Ollama 可用模型。"""
+    ollama_models: list[dict] = []
+    ollama_error: Optional[str] = None
+    base_url = "http://localhost:11434"
+    try:
+        from settings import get_settings as _gs
+        base_url = _gs().get("ollama_base_url") or base_url
+    except Exception:
+        pass
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(f"{base_url.rstrip('/')}/api/tags")
+            r.raise_for_status()
+            data = r.json()
+            for m in data.get("models", []):
+                name = m.get("name") or m.get("model")
+                if not name:
+                    continue
+                size = m.get("size", 0)
+                size_gb = f"{size / 1024 / 1024 / 1024:.1f} GB" if size else ""
+                ollama_models.append({
+                    "id": name,
+                    "label": f"{name}" + (f"（{size_gb}）" if size_gb else ""),
+                })
+    except Exception as e:
+        ollama_error = f"無法連線 Ollama（{base_url}）：{e}"
+
+    return {
+        "groq": _GROQ_MODEL_PRESETS,
+        "ollama": ollama_models,
+        "ollama_base_url": base_url,
+        "ollama_error": ollama_error,
+    }
+
+
+# ── Recipe Book ──────────────────────────────────────────────
+@app.get("/recipes")
+async def list_all_recipes():
+    from pipeline.recipe import list_recipes
+    return list_recipes()
+
+
+@app.delete("/recipes/{pipeline_name}/{step_name}")
+async def delete_one_recipe(pipeline_name: str, step_name: str):
+    from pipeline.recipe import delete_recipe
+    ok = delete_recipe(pipeline_name, step_name)
+    return {"deleted": ok}
+
+
+@app.delete("/recipes/{pipeline_name}")
+async def delete_pipeline_all_recipes(pipeline_name: str):
+    from pipeline.recipe import delete_pipeline_recipes
+    count = delete_pipeline_recipes(pipeline_name)
+    return {"deleted_count": count}
+
+
 # ── File System Browser ──────────────────────────────────────
 @app.get("/fs/browse")
 async def fs_browse(path: str = ""):
@@ -99,10 +199,15 @@ async def start_pipeline(req: PipelineRunRequest):
     from pipeline.store import PipelineRun as PRun, get_store
     from pipeline.logger import create_run_logger
     try:
+        import logging as _logging
+        _log = _logging.getLogger("pipeline")
+        _log.debug(f"收到 YAML（{len(req.yaml_content)} 字元）:\n{req.yaml_content}")
         data = yaml.safe_load(req.yaml_content)
         config_dict = data.get("pipeline", data)
         config_dict["validate"] = req.validate
         config = PipelineConfig(**config_dict)
+        for i, s in enumerate(config.steps):
+            _log.debug(f"步驟[{i}] batch（{len(s.batch)} 字元）：{s.batch[:300]}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"YAML 解析失敗：{e}")
 
@@ -166,8 +271,8 @@ async def get_pipeline_log(run_id: str):
     log_path = Path(run.log_path)
     if not log_path.exists():
         return {"log": "（尚無 log 檔案）"}
-    lines = log_path.read_text(encoding="utf-8").splitlines()
-    return {"log": "\n".join(lines[-100:])}
+    content = log_path.read_text(encoding="utf-8")
+    return {"log": content}
 
 
 # ── Pipeline Schedule ────────────────────────────────────────
@@ -253,12 +358,11 @@ class PipelineChatRequest(BaseModel):
 
 @app.post("/pipeline/chat")
 async def pipeline_chat(req: PipelineChatRequest):
-    from langchain_groq import ChatGroq
     from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-    import config as cfg
+    from llm_factory import build_llm
     import re
 
-    llm = ChatGroq(api_key=cfg.GROQ_API_KEY, model=cfg.GROQ_MODEL_MAIN, temperature=0.3)
+    llm = build_llm(temperature=0.3)
     lc_messages = [SystemMessage(content=_PIPELINE_SYSTEM)]
     for m in req.messages:
         cls = HumanMessage if m["role"] == "user" else AIMessage

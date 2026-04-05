@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
-  MessageSquare, CalendarClock, FolderOpen, Zap, GitBranch,
+  MessageSquare, CalendarClock, FolderOpen, Zap, GitBranch, Settings,
   ChevronDown, ChevronRight, Circle, AlertCircle, CheckCircle2,
   Info
 } from 'lucide-react'
@@ -18,6 +18,7 @@ const nav = [
   { href: '/pipeline', label: 'Pipeline',   icon: GitBranch },
   { href: '/tasks',    label: '定時任務',   icon: CalendarClock },
   { href: '/files',    label: '輸出檔案',   icon: FolderOpen },
+  { href: '/settings', label: '設定',       icon: Settings },
 ]
 
 export function Sidebar() {

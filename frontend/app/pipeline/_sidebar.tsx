@@ -2,8 +2,9 @@
 import { useState, useRef, useEffect } from 'react'
 import {
   Plus, Workflow, X, Bot, ChevronUp, ChevronDown,
-  Send, Loader2, Pencil, Check, Trash2,
+  Send, Loader2, Pencil, Check, Trash2, Settings, BookOpen,
 } from 'lucide-react'
+import Link from 'next/link'
 import { toast } from 'sonner'
 import ReactMarkdown from 'react-markdown'
 import { useWorkflowStore } from './_store'
@@ -173,7 +174,21 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
         <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center shrink-0">
           <Workflow className="w-4 h-4 text-white" />
         </div>
-        <span className="font-bold text-gray-800 text-sm">Pipeline</span>
+        <span className="font-bold text-gray-800 text-sm flex-1">Pipeline</span>
+        <Link
+          href="/recipes"
+          className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+          title="Recipe Book"
+        >
+          <BookOpen className="w-4 h-4" />
+        </Link>
+        <Link
+          href="/settings"
+          className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+          title="設定"
+        >
+          <Settings className="w-4 h-4" />
+        </Link>
       </div>
 
       {/* ── New Workflow Button ── */}

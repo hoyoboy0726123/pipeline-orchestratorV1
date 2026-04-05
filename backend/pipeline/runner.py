@@ -23,8 +23,8 @@ from config import TELEGRAM_BOT_TOKEN
 from .models import PipelineConfig
 from .store import PipelineRun, StepResult, get_store
 from .logger import create_run_logger
-from .executor import execute_step
-from .validator import validate_step, ValidationResult
+from .executor import execute_step, execute_step_with_skill
+from .validator import validate_step, validate_step_with_skill, ValidationResult
 
 
 # ── Telegram helpers ─────────────────────────────────────────────────────────
@@ -161,32 +161,55 @@ async def run_pipeline(
     store.save(run)
 
     # ── Step loop ────────────────────────────────────────────
+    completed_outputs: list[dict] = []  # 收集前步驟的輸出資訊
+
     while run.current_step < len(config.steps):
         step = config.steps[run.current_step]
         step_num = run.current_step + 1
         total = len(config.steps)
         logger.info(f"══ 步驟 {step_num}/{total}：{step.name} ══")
+        logger.debug(f"[{step.name}] batch 全文（{len(step.batch)} 字元）：{step.batch[:500]}")
 
         retries_used = 0
 
         # Retry loop for this step
         while True:
-            exec_result = await execute_step(
-                command=step.batch,
-                timeout=step.timeout,
-                logger=logger,
-                step_name=step.name,
-            )
+            if step.skill_mode:
+                # working_dir: 優先用 step 指定，fallback 到 output_path 的目錄
+                wd = step.working_dir
+                if not wd and step.output and step.output.path:
+                    from pathlib import Path as _Path
+                    wd = str(_Path(step.output.path).parent)
+                exec_result = await execute_step_with_skill(
+                    task_description=step.batch,
+                    timeout=step.timeout,
+                    logger=logger,
+                    step_name=step.name,
+                    output_path=step.output.path if step.output else None,
+                    working_dir=wd or None,
+                    prev_outputs=completed_outputs if completed_outputs else None,
+                    pipeline_id=config.name,
+                )
+            else:
+                exec_result = await execute_step(
+                    command=step.batch,
+                    timeout=step.timeout,
+                    logger=logger,
+                    step_name=step.name,
+                )
 
             if config.validate:
-                val = await validate_step(
+                # 選擇驗證模式：Skill agent 或一般 LLM 驗證
+                use_skill = step.output and step.output.skill_mode
+                validate_fn = validate_step_with_skill if use_skill else validate_step
+                val = await validate_fn(
                     step_name=step.name,
                     command=step.batch,
                     exit_code=exec_result.exit_code,
                     stdout=exec_result.stdout,
                     stderr=exec_result.stderr,
                     output_path=step.output.path if step.output else None,
-                    output_expect=step.output.expect if step.output else None,
+                    output_expect=step.output.get_expect() if step.output else None,
                     logger=logger,
                 )
             else:
@@ -219,6 +242,23 @@ async def run_pipeline(
 
             if val.status == "ok":
                 logger.info(f"步驟 {step_num} ✅ 通過")
+                # 收集此步驟的輸出資訊供後續步驟參考
+                if step.output and step.output.path:
+                    out_info = {"path": step.output.path, "schema": ""}
+                    try:
+                        from pathlib import Path as _Path
+                        p = _Path(step.output.path)
+                        if p.suffix == ".csv" and p.exists():
+                            with open(p, "r") as f:
+                                header = f.readline().strip()
+                            out_info["schema"] = header
+                        elif p.suffix in (".xlsx", ".xls") and p.exists():
+                            out_info["schema"] = "Excel 工作簿"
+                        elif p.suffix in (".png", ".jpg", ".jpeg") and p.exists():
+                            out_info["schema"] = "圖片檔案"
+                    except Exception:
+                        pass
+                    completed_outputs.append(out_info)
                 run.current_step += 1
                 store.save(run)
                 break  # 進入下一步

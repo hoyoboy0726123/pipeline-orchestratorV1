@@ -413,7 +413,7 @@ export default function PipelinePage() {
     const steps = flowToSteps(nodes, edges)
     const emptyStep = steps.find(s => !s.batch?.trim())
     if (emptyStep) {
-      toast.error(`步驟「${emptyStep.name}」尚未設定執行指令，請點擊該步驟方塊填入指令`)
+      toast.error(`步驟「${emptyStep.name}」尚未設定${emptyStep.skillMode ? '任務描述' : '執行指令'}，請點擊該步驟方塊填入`)
       return
     }
     const yaml = getYaml()

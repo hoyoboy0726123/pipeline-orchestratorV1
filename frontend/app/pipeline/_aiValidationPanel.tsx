@@ -54,6 +54,39 @@ export default function AiValidationPanel({ data, onUpdate, onClose, onDelete }:
           />
           <p className="text-xs text-gray-400 mt-1">指定要驗證的輸出檔案路徑，留空則驗證前一步驟的標準輸出</p>
         </div>
+
+        <div>
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Skill 模式</label>
+            <button
+              type="button"
+              onClick={() => onUpdate({ skillMode: !data.skillMode })}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                data.skillMode ? 'bg-purple-500' : 'bg-gray-300'
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                  data.skillMode ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                }`}
+              />
+            </button>
+          </div>
+          <p className="text-xs text-gray-400 mt-1.5">
+            {data.skillMode
+              ? '🔬 已啟用：AI 會主動執行 Python / Shell 來驗證輸出'
+              : '啟用後 AI 可主動寫程式碼驗證，而非僅閱讀文字判斷'}
+          </p>
+          {data.skillMode && (
+            <div className="mt-2 p-2 rounded-lg bg-purple-50 border border-purple-200">
+              <p className="text-xs text-purple-700 leading-relaxed">
+                <span className="font-semibold">Skill 工具：</span>
+                run_python · run_shell · read_file
+              </p>
+              <p className="text-xs text-purple-500 mt-1">AI 會根據驗證描述自動撰寫並執行驗證程式碼</p>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="p-4 border-t bg-purple-50">

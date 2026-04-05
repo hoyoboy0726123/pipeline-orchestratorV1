@@ -30,14 +30,23 @@ class StepOutput(BaseModel):
     """輸出檔案的預期描述（用自然語言，LLM 負責驗證）"""
     path: Optional[str] = None
     expect: str = ""
+    description: str = ""  # 同 expect 的別名，YAML 可用 description 代替
+    ai_validation: bool = True  # YAML 可用 ai_validation: true 明確啟用
+    skill_mode: bool = False  # True = 使用 Skill agent 主動驗證
+
+    def get_expect(self) -> str:
+        """取得驗證描述（優先 expect，fallback 到 description）"""
+        return self.expect or self.description
 
 
 class PipelineStep(BaseModel):
     name: str
-    batch: str            # Shell 命令
+    batch: str = ""       # Shell 命令（skill_mode 時可為自然語言描述）
+    working_dir: str = ""  # 工作目錄（run_python/run_shell 的 cwd）
     timeout: int = 300    # 秒
     output: Optional[StepOutput] = None
     retry: int = 1        # 自動重試次數（超過才問用戶）
+    skill_mode: bool = False  # True = batch 為自然語言，由 LLM Skill agent 執行
 
 
 class PipelineConfig(BaseModel):

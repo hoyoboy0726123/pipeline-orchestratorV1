@@ -4,8 +4,10 @@ import type { Node, Edge } from '@xyflow/react'
 export interface StepData extends Record<string, unknown> {
   name: string
   batch: string
+  workingDir: string
   outputPath: string
   expect: string
+  skillMode: boolean
   timeout: number
   retry: number
   index: number
@@ -16,6 +18,7 @@ export interface StepData extends Record<string, unknown> {
 export interface AiValidationData extends Record<string, unknown> {
   expectText: string
   targetPath: string
+  skillMode: boolean
   index: number
 }
 
@@ -24,7 +27,7 @@ export type AiValidationNode = Node<AiValidationData>
 export type AppNode = Node<StepData | AiValidationData>
 
 export function newAiValidationData(index = 0): AiValidationData {
-  return { expectText: '', targetPath: '', index }
+  return { expectText: '', targetPath: '', skillMode: false, index }
 }
 
 let _counter = 0
@@ -33,8 +36,10 @@ export function newStepData(index = 0): StepData {
   return {
     name: `步驟 ${_counter}`,
     batch: '',
+    workingDir: '',
     outputPath: '',
     expect: '',
+    skillMode: false,
     timeout: 300,
     retry: 0,
     index,
@@ -127,8 +132,10 @@ export function flowToSteps(nodes: AppNode[], edges: Edge[]): StepData[] {
     return {
       name: d.name,
       batch: d.batch,
+      workingDir: d.workingDir || '',
       outputPath: (aiData?.targetPath && !d.outputPath) ? aiData.targetPath : d.outputPath,
       expect: aiData?.expectText || d.expect,
+      skillMode: aiData?.skillMode || d.skillMode || false,
       timeout: d.timeout,
       retry: d.retry,
       index: i,
@@ -151,11 +158,34 @@ export function stepsToYaml(name: string, validate: boolean, steps: StepData[]):
   ]
   for (const s of steps) {
     lines.push(`  - name: ${s.name}`)
-    if (s.batch) lines.push(`    batch: ${s.batch}`)
+    if (s.workingDir) lines.push(`    working_dir: ${s.workingDir}`)
+    // batch: 多行用 YAML literal block (|)
+    if (s.batch) {
+      if (s.batch.includes('\n')) {
+        lines.push(`    batch: |`)
+        for (const bl of s.batch.split('\n')) {
+          lines.push(`      ${bl}`)
+        }
+      } else {
+        lines.push(`    batch: ${s.batch}`)
+      }
+    }
+    if (s.skillMode) lines.push(`    skill_mode: true`)
     if (s.outputPath || s.expect) {
       lines.push(`    output:`)
       if (s.outputPath) lines.push(`      path: ${s.outputPath}`)
-      if (s.expect) lines.push(`      expect: "${s.expect.replace(/"/g, '\\"')}"`)
+      if (s.expect) {
+        lines.push(`      ai_validation: true`)
+        if (s.expect.includes('\n')) {
+          lines.push(`      description: |`)
+          for (const dl of s.expect.split('\n')) {
+            lines.push(`        ${dl}`)
+          }
+        } else {
+          lines.push(`      description: "${s.expect.replace(/"/g, '\\"')}"`)
+        }
+      }
+      if (s.skillMode) lines.push(`      skill_mode: true`)
     }
     if (s.timeout !== 300) lines.push(`    timeout: ${s.timeout}`)
     if (s.retry > 0)       lines.push(`    retry: ${s.retry}`)
@@ -182,9 +212,40 @@ export function parseYaml(raw: string): { name: string; validate: boolean; steps
     const steps: StepData[] = []
     let cur: Partial<StepData> | null = null
     let inOutput = false
+    // 追蹤多行 literal block (|) 的狀態
+    let multilineTarget: 'batch' | 'expect' | null = null
+    let multilineIndent = 0
+    let multilineLines: string[] = []
 
-    for (const line of lines) {
+    const flushMultiline = () => {
+      if (multilineTarget && cur && multilineLines.length > 0) {
+        const text = multilineLines.join('\n').replace(/\n+$/, '')
+        if (multilineTarget === 'batch') cur.batch = text
+        else cur.expect = text
+      }
+      multilineTarget = null
+      multilineLines = []
+      multilineIndent = 0
+    }
+
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li]
       const t = line.trim()
+
+      // 處理多行 literal block 的續行
+      if (multilineTarget) {
+        // 空行保留在多行區塊中
+        if (t === '') { multilineLines.push(''); continue }
+        // 計算當前行前導空格
+        const leadingSpaces = line.match(/^(\s*)/)?.[1].length ?? 0
+        if (leadingSpaces >= multilineIndent) {
+          multilineLines.push(line.slice(multilineIndent))
+          continue
+        }
+        // 縮排回退，結束多行區塊
+        flushMultiline()
+      }
+
       if (!t || t.startsWith('#') || t === 'pipeline:' || t === 'steps:') continue
 
       if (/^name:/.test(t) && !cur) {
@@ -192,18 +253,42 @@ export function parseYaml(raw: string): { name: string; validate: boolean; steps
       } else if (/^validate:/.test(t) && !cur) {
         validate = /true/.test(t)
       } else if (/^- name:/.test(t)) {
+        flushMultiline()
         if (cur) steps.push(buildStep(cur, steps.length))
         cur = { name: t.replace(/^-\s*name:\s*/, '') }
         inOutput = false
+      } else if (/^working_dir:/.test(t) && cur) {
+        cur.workingDir = t.replace(/^working_dir:\s*/, '')
+        inOutput = false
       } else if (/^batch:/.test(t) && cur) {
-        cur.batch = t.replace(/^batch:\s*/, '')
+        const val = t.replace(/^batch:\s*/, '')
+        if (val === '|' || val === '>') {
+          // 開始多行區塊，找下一行的縮排作為基準
+          multilineTarget = 'batch'
+          const nextLine = lines[li + 1]
+          multilineIndent = nextLine ? (nextLine.match(/^(\s*)/)?.[1].length ?? 0) : 0
+        } else {
+          cur.batch = val
+        }
         inOutput = false
       } else if (/^output:/.test(t) && cur) {
         inOutput = true
       } else if (/^path:/.test(t) && cur && inOutput) {
         cur.outputPath = t.replace(/^path:\s*/, '')
-      } else if (/^expect:/.test(t) && cur && inOutput) {
-        cur.expect = t.replace(/^expect:\s*/, '').replace(/^"|"$/g, '')
+      } else if (/^(expect|description):/.test(t) && cur && inOutput) {
+        const val = t.replace(/^(expect|description):\s*/, '').replace(/^"|"$/g, '')
+        if (val === '|' || val === '>') {
+          multilineTarget = 'expect'
+          const nextLine = lines[li + 1]
+          multilineIndent = nextLine ? (nextLine.match(/^(\s*)/)?.[1].length ?? 0) : 0
+        } else {
+          cur.expect = val
+        }
+      } else if (/^ai_validation:/.test(t) && cur && inOutput) {
+        // ai_validation: true → 啟用驗證（expect 由 description 填入）
+        if (/true/.test(t)) validate = true
+      } else if (/^skill_mode:/.test(t) && cur) {
+        cur.skillMode = /true/.test(t)
       } else if (/^timeout:/.test(t) && cur) {
         cur.timeout = parseInt(t.replace(/^timeout:\s*/, '')) || 300
         inOutput = false
@@ -212,6 +297,7 @@ export function parseYaml(raw: string): { name: string; validate: boolean; steps
         inOutput = false
       }
     }
+    flushMultiline()
     if (cur) steps.push(buildStep(cur, steps.length))
     return { name, validate, steps }
   } catch { return null }
@@ -221,8 +307,10 @@ function buildStep(partial: Partial<StepData>, index: number): StepData {
   return {
     name: partial.name ?? `步驟 ${index + 1}`,
     batch: partial.batch ?? '',
+    workingDir: partial.workingDir ?? '',
     outputPath: partial.outputPath ?? '',
     expect: partial.expect ?? '',
+    skillMode: partial.skillMode ?? false,
     timeout: partial.timeout ?? 300,
     retry: partial.retry ?? 0,
     index,
