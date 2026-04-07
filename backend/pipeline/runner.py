@@ -226,6 +226,7 @@ async def run_pipeline(
 
     config = PipelineConfig.from_dict(run.config_dict)
     use_recipe = run.config_dict.get("_use_recipe", False)
+    workflow_id = run.config_dict.get("_workflow_id") or run.workflow_id
     store.save(run)
 
     # ── Step loop ────────────────────────────────────────────
@@ -256,7 +257,7 @@ async def run_pipeline(
                     output_path=step.output.path if step.output else None,
                     working_dir=wd or None,
                     prev_outputs=completed_outputs if completed_outputs else None,
-                    pipeline_id=config.name,
+                    pipeline_id=workflow_id or config.name,
                 )
             else:
                 exec_result = await execute_step(

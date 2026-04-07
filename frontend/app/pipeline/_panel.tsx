@@ -8,17 +8,22 @@ import { toast } from 'sonner'
 
 // ── 執行前綴 ─────────────────────────────────────────────────────────────────
 const EXEC_PREFIXES = [
-  { label: 'python3 (macOS/Linux)',         value: 'python3' },
-  { label: 'python (macOS/Linux)',          value: 'python' },
-  { label: '.venv/bin/python (venv)',       value: '.venv/bin/python' },
-  { label: 'bash',                          value: 'bash' },
-  { label: 'sh',                            value: 'sh' },
-  { label: 'py (Windows Launcher)',         value: 'py' },
-  { label: 'py -3 (Windows Py3)',           value: 'py -3' },
-  { label: '.venv\\Scripts\\python (Win venv)', value: '.venv\\Scripts\\python' },
-  { label: 'node',                          value: 'node' },
-  { label: 'npx',                           value: 'npx' },
-  { label: '直接執行（不加前綴）',           value: '' },
+  // ── 跨平台 ──
+  { label: 'python',                           value: 'python',                platform: 'cross' },
+  { label: 'python3',                          value: 'python3',               platform: 'cross' },
+  { label: 'node',                             value: 'node',                  platform: 'cross' },
+  { label: 'npx',                              value: 'npx',                   platform: 'cross' },
+  { label: '直接執行（不加前綴）',               value: '',                      platform: 'cross' },
+  // ── macOS / Linux ──
+  { label: '.venv/bin/python (venv)',          value: '.venv/bin/python',       platform: 'unix' },
+  { label: 'bash',                             value: 'bash',                  platform: 'unix' },
+  { label: 'sh',                               value: 'sh',                   platform: 'unix' },
+  // ── Windows ──
+  { label: 'py (Windows Launcher)',            value: 'py',                    platform: 'win' },
+  { label: 'py -3 (Windows Py3)',              value: 'py -3',                 platform: 'win' },
+  { label: '.venv\\Scripts\\python (Win venv)', value: '.venv\\Scripts\\python', platform: 'win' },
+  { label: 'cmd /c',                           value: 'cmd /c',               platform: 'win' },
+  { label: 'powershell -File',                 value: 'powershell -File',      platform: 'win' },
 ]
 
 function splitBatch(batch: string): { prefix: string; filePath: string } {
@@ -133,12 +138,12 @@ export default function NodeConfigPanel({ node, onUpdate, onClose, onDelete, aiE
   const [venvChecking, setVenvChecking] = useState(false)
 
   const { prefix: initPrefix, filePath: initPath } = splitBatch(data.batch)
-  const [selectedPrefix, setSelectedPrefix] = useState(initPrefix || 'python3')
+  const [selectedPrefix, setSelectedPrefix] = useState(initPrefix || 'python')
 
   // Re-sync prefix when node changes
   useEffect(() => {
     const { prefix } = splitBatch(data.batch)
-    setSelectedPrefix(prefix || 'python3')
+    setSelectedPrefix(prefix || 'python')
   }, [node.id])
 
   const upd = (patch: Partial<StepData>) => onUpdate(patch)
@@ -150,17 +155,24 @@ export default function NodeConfigPanel({ node, onUpdate, onClose, onDelete, aiE
 
   const handleVenvToggle = async (checked: boolean) => {
     if (!pyPath) return
-    const scriptDir = pyPath.substring(0, pyPath.lastIndexOf('/'))
-    if (!checked) { upd({ batch: `python3 ${pyPath}` }); setSelectedPrefix('python3'); return }
+    const sep = pyPath.includes('\\') ? '\\' : '/'
+    const scriptDir = pyPath.substring(0, pyPath.lastIndexOf(sep))
+    if (!checked) {
+      // 還原為之前選的前綴，或預設 python3
+      const fallback = selectedPrefix.includes('venv') ? 'python' : selectedPrefix || 'python'
+      upd({ batch: `${fallback} ${pyPath}` }); setSelectedPrefix(fallback); return
+    }
     setVenvChecking(true)
     try {
       const res = await fsCheckVenv(scriptDir)
       if (res.has_venv && res.python_path) {
         upd({ batch: `${res.python_path} ${pyPath}` })
-        setSelectedPrefix('.venv/bin/python')
+        // 根據回傳路徑自動判斷平台
+        const isWin = res.python_path.includes('Scripts')
+        setSelectedPrefix(isWin ? '.venv\\Scripts\\python' : '.venv/bin/python')
         toast.success('已切換為虛擬環境 Python')
       } else {
-        toast.error(`找不到 .venv，請先在專案目錄執行：\ncd ${scriptDir} && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, { duration: 8000 })
+        toast.error(`找不到 .venv，請先在專案目錄建立虛擬環境`, { duration: 8000 })
       }
     } catch { toast.error('檢查虛擬環境失敗') }
     finally { setVenvChecking(false) }
@@ -176,8 +188,10 @@ export default function NodeConfigPanel({ node, onUpdate, onClose, onDelete, aiE
             if (browserTarget === 'batch') {
               let prefix = selectedPrefix
               if (path.endsWith('.sh'))                    { prefix = 'bash';    setSelectedPrefix('bash') }
+              else if (path.endsWith('.bat') || path.endsWith('.cmd')) { prefix = 'cmd /c'; setSelectedPrefix('cmd /c') }
+              else if (path.endsWith('.ps1'))              { prefix = 'powershell -File'; setSelectedPrefix('powershell -File') }
               else if (path.endsWith('.js') || path.endsWith('.mjs')) { prefix = 'node'; setSelectedPrefix('node') }
-              else if (path.endsWith('.py') && !prefix)   { prefix = 'python3'; setSelectedPrefix('python3') }
+              else if (path.endsWith('.py') && !prefix)   { prefix = 'python'; setSelectedPrefix('python') }
               upd({ batch: prefix ? `${prefix} ${path}` : path })
             } else {
               upd({ outputPath: path })
@@ -272,9 +286,21 @@ export default function NodeConfigPanel({ node, onUpdate, onClose, onDelete, aiE
                     }}
                     className="shrink-0 border border-gray-200 rounded-lg px-2 py-1.5 text-xs bg-white text-gray-700 outline-none focus:border-indigo-400 cursor-pointer"
                   >
-                    {EXEC_PREFIXES.map((p, i) => (
-                      <option key={i} value={p.value}>{p.label}</option>
-                    ))}
+                    <optgroup label="跨平台">
+                      {EXEC_PREFIXES.filter(p => p.platform === 'cross').map((p, i) => (
+                        <option key={`c-${i}`} value={p.value}>{p.label}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="macOS / Linux">
+                      {EXEC_PREFIXES.filter(p => p.platform === 'unix').map((p, i) => (
+                        <option key={`u-${i}`} value={p.value}>{p.label}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Windows">
+                      {EXEC_PREFIXES.filter(p => p.platform === 'win').map((p, i) => (
+                        <option key={`w-${i}`} value={p.value}>{p.label}</option>
+                      ))}
+                    </optgroup>
                   </select>
                   <span className="text-gray-300 text-sm self-center">+</span>
                   <input

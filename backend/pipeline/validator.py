@@ -676,9 +676,10 @@ async def validate_step_with_skill(
    print(f"欄位：{list(df.columns)}")
    </input>
 
-2. run_shell — 執行 Shell 命令
+2. run_shell — 執行系統命令
    用法：<tool>run_shell</tool>
    <input>wc -l /path/to/file.csv</input>
+   注意：盡量用 run_python 代替 run_shell，因為 Python 是跨平台的。
 
 3. read_file — 讀取檔案內容
    用法：<tool>read_file</tool>
@@ -707,10 +708,11 @@ async def validate_step_with_skill(
 - 使用 matplotlib.pyplot 時，務必在最前面加 `import matplotlib; matplotlib.use('Agg')` 以避免 GUI 問題
 - boxplot 的 `labels` 參數已在新版棄用，請改用 `tick_labels`
 - 繪製分組箱形圖時，需要先將資料按分組欄位 pivot/reshape，再分別傳入各組資料
-- 中文顯示已設定好字型（PingFang HK），無需額外處理
+- 中文顯示：macOS 使用 'PingFang HK'；Windows 使用 'Microsoft JhengHei' 或 'SimHei'
 - 繪圖完成後務必呼叫 `plt.savefig(路徑, dpi=150, bbox_inches='tight')` 並 `plt.close()`
 
 【重要規則】
+- **路徑處理：一律使用 `pathlib.Path` 或 `os.path.join` 組合路徑，不要用字串拼接 `/`**
 - **只使用上方列出的已安裝套件，不要安裝新套件**
 - **絕對不要執行 sudo、pip install、apt 等安裝命令**
 - 根據「預期輸出描述」主動驗證，不要只看 exit code

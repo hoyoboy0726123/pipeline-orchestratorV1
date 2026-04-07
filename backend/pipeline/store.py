@@ -1,5 +1,5 @@
 """
-Pipeline Run 狀態持久化（SQLite）。
+Pipeline Run 狀態持久化（使用統一 SQLite DB）。
 
 每次 pipeline 執行建立一個 PipelineRun 記錄，
 包含每步的執行結果與驗證結論，支援暫停後恢復。
@@ -10,9 +10,7 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Optional
 
-from config import OUTPUT_BASE_PATH
-
-PIPELINE_DB = str(OUTPUT_BASE_PATH / "pipeline_runs.db")
+from db import get_conn
 
 
 @dataclass
@@ -40,67 +38,67 @@ class PipelineRun:
     log_path: str = ""
     started_at: str = field(default_factory=lambda: datetime.now().isoformat())
     ended_at: Optional[str] = None
+    workflow_id: Optional[str] = None
 
 
 class RunStore:
-    def __init__(self):
-        self._conn = sqlite3.connect(PIPELINE_DB, check_same_thread=False)
-        self._conn.execute("""
-            CREATE TABLE IF NOT EXISTS pipeline_runs (
-                run_id TEXT PRIMARY KEY,
-                data   TEXT NOT NULL
-            )
-        """)
-        self._conn.commit()
-
     def save(self, run: PipelineRun):
+        conn = get_conn()
         raw = asdict(run)
         raw["step_results"] = [
             asdict(s) if isinstance(s, StepResult) else s
             for s in run.step_results
         ]
-        self._conn.execute(
-            "INSERT OR REPLACE INTO pipeline_runs VALUES (?, ?)",
-            (run.run_id, json.dumps(raw, ensure_ascii=False)),
+        workflow_id = raw.pop("workflow_id", None)
+        conn.execute(
+            "INSERT OR REPLACE INTO runs (run_id, workflow_id, data) VALUES (?, ?, ?)",
+            (run.run_id, workflow_id, json.dumps(raw, ensure_ascii=False)),
         )
-        self._conn.commit()
+        conn.commit()
 
     def load(self, run_id: str) -> Optional[PipelineRun]:
-        row = self._conn.execute(
-            "SELECT data FROM pipeline_runs WHERE run_id=?", (run_id,)
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT data, workflow_id FROM runs WHERE run_id=?", (run_id,)
         ).fetchone()
         if not row:
             return None
         d = json.loads(row[0])
         d["step_results"] = [StepResult(**s) for s in d.get("step_results", [])]
+        d["workflow_id"] = row[1]
         return PipelineRun(**d)
 
     def list_recent(self, limit: int = 10) -> list[PipelineRun]:
-        rows = self._conn.execute(
-            "SELECT data FROM pipeline_runs ORDER BY rowid DESC LIMIT ?", (limit,)
+        conn = get_conn()
+        rows = conn.execute(
+            "SELECT data, workflow_id FROM runs ORDER BY rowid DESC LIMIT ?", (limit,)
         ).fetchall()
         result = []
-        for (data,) in rows:
+        for data, wid in rows:
             d = json.loads(data)
             d["step_results"] = [StepResult(**s) for s in d.get("step_results", [])]
+            d["workflow_id"] = wid
             result.append(PipelineRun(**d))
         return result
 
     def delete(self, run_id: str) -> bool:
-        cursor = self._conn.execute(
-            "DELETE FROM pipeline_runs WHERE run_id=?", (run_id,)
+        conn = get_conn()
+        cursor = conn.execute(
+            "DELETE FROM runs WHERE run_id=?", (run_id,)
         )
-        self._conn.commit()
+        conn.commit()
         return cursor.rowcount > 0
 
     def list_awaiting(self) -> list[PipelineRun]:
         """回傳所有正在等待人為決策的 run"""
-        rows = self._conn.execute("SELECT data FROM pipeline_runs").fetchall()
+        conn = get_conn()
+        rows = conn.execute("SELECT data, workflow_id FROM runs").fetchall()
         result = []
-        for (data,) in rows:
+        for data, wid in rows:
             d = json.loads(data)
             if d.get("status") == "awaiting_human":
                 d["step_results"] = [StepResult(**s) for s in d.get("step_results", [])]
+                d["workflow_id"] = wid
                 result.append(PipelineRun(**d))
         return result
 

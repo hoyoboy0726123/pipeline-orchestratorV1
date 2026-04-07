@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, BookOpen, RefreshCw, Trash2, CheckCircle2, XCircle, Code2, ChevronDown, ChevronRight } from 'lucide-react'
 import { toast, Toaster } from 'sonner'
-import { listRecipes, deleteRecipe, deletePipelineRecipes, type Recipe } from '@/lib/api'
+import { listRecipes, deleteRecipe, deleteWorkflowRecipes, listWorkflows, type Recipe, type WorkflowData } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 function formatTime(ts: number): string {
@@ -21,14 +21,16 @@ function formatDuration(sec: number): string {
 
 export default function RecipesPage() {
   const [recipes, setRecipes] = useState<Recipe[]>([])
+  const [workflows, setWorkflows] = useState<WorkflowData[]>([])
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<string | null>(null)
 
   const load = async () => {
     setLoading(true)
     try {
-      const data = await listRecipes()
+      const [data, wfs] = await Promise.all([listRecipes(), listWorkflows()])
       setRecipes(data)
+      setWorkflows(wfs)
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -38,23 +40,33 @@ export default function RecipesPage() {
 
   useEffect(() => { load() }, [])
 
-  // 依 pipeline 分組
+  // workflow_id → name 的查找表
+  const wfNames = useMemo(() => {
+    const map = new Map<string, string>()
+    workflows.forEach(w => map.set(w.id, w.name))
+    return map
+  }, [workflows])
+
+  // 依 workflow 分組
   const grouped = useMemo(() => {
     const map = new Map<string, Recipe[]>()
     recipes.forEach(r => {
-      if (!map.has(r.pipeline_id)) map.set(r.pipeline_id, [])
-      map.get(r.pipeline_id)!.push(r)
+      const key = r.workflow_id
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(r)
     })
-    return Array.from(map.entries()).map(([pipeline, list]) => ({
-      pipeline,
+    return Array.from(map.entries()).map(([wfId, list]) => ({
+      workflowId: wfId,
+      workflowName: wfNames.get(wfId) || wfId,
       list: list.sort((a, b) => a.step_name.localeCompare(b.step_name)),
     }))
-  }, [recipes])
+  }, [recipes, wfNames])
 
   const handleDeleteOne = async (r: Recipe) => {
-    if (!confirm(`確定刪除「${r.pipeline_id} / ${r.step_name}」的 recipe？下次執行會重新叫 LLM 學習。`)) return
+    const wfName = wfNames.get(r.workflow_id) || r.workflow_id
+    if (!confirm(`確定刪除「${wfName} / ${r.step_name}」的 recipe？下次執行會重新叫 LLM 學習。`)) return
     try {
-      await deleteRecipe(r.pipeline_id, r.step_name)
+      await deleteRecipe(r.workflow_id, r.step_name)
       toast.success('已刪除')
       load()
     } catch (e) {
@@ -62,10 +74,10 @@ export default function RecipesPage() {
     }
   }
 
-  const handleDeletePipeline = async (pipeline: string) => {
-    if (!confirm(`確定清除「${pipeline}」的所有 recipe？下次執行全部重新學習。`)) return
+  const handleDeleteWorkflow = async (workflowId: string, workflowName: string) => {
+    if (!confirm(`確定清除「${workflowName}」的所有 recipe？下次執行全部重新學習。`)) return
     try {
-      const n = await deletePipelineRecipes(pipeline)
+      const n = await deleteWorkflowRecipes(workflowId)
       toast.success(`已刪除 ${n} 筆 recipe`)
       load()
     } catch (e) {
@@ -116,16 +128,16 @@ export default function RecipesPage() {
           </div>
         ) : (
           <div className="space-y-4">
-            {grouped.map(({ pipeline, list }) => (
-              <div key={pipeline} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                {/* Pipeline header */}
+            {grouped.map(({ workflowId, workflowName, list }) => (
+              <div key={workflowId} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                {/* Workflow header */}
                 <div className="px-6 py-3 bg-gray-50/70 border-b border-gray-100 flex items-center justify-between">
                   <div>
-                    <div className="text-sm font-semibold text-gray-900">{pipeline}</div>
+                    <div className="text-sm font-semibold text-gray-900">{workflowName}</div>
                     <div className="text-xs text-gray-500">{list.length} 個步驟</div>
                   </div>
                   <button
-                    onClick={() => handleDeletePipeline(pipeline)}
+                    onClick={() => handleDeleteWorkflow(workflowId, workflowName)}
                     className="text-xs px-3 py-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-1.5"
                   >
                     <Trash2 className="w-3.5 h-3.5" />

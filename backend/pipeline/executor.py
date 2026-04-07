@@ -93,7 +93,7 @@ def _clean_env() -> dict:
     env.pop("PYTHONHOME", None)
     paths = env.get("PATH", "").split(os.pathsep)
     if venv:
-        venv_bin = os.path.join(venv, "bin")
+        venv_bin = os.path.join(venv, "Scripts" if os.name == "nt" else "bin")
         paths = [p for p in paths if p != venv_bin]
     # 把 _SKILL_PYTHON 所在目錄放到 PATH 最前面
     global _SKILL_PYTHON
@@ -536,6 +536,9 @@ async def execute_step_with_skill(
         output_path:      預期輸出路徑（可選，讓 agent 知道要把結果存在哪）
         prev_outputs:     前幾步的輸出檔案資訊列表，格式 [{"path": "...", "schema": "..."}]
     """
+    # 展開 ~ 為完整路徑
+    if output_path:
+        output_path = str(Path(output_path).expanduser())
     # 自動建立輸出路徑的父目錄和工作目錄
     if output_path:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -552,37 +555,42 @@ async def execute_step_with_skill(
     input_paths = [po["path"] for po in (prev_outputs or []) if po.get("path")]
     if pipeline_id:
         try:
-            from pipeline.recipe import match_recipe, save_recipe, mark_recipe_failed, load_recipe as _load_recipe
+            from db import get_recipe, match_recipe, save_recipe, mark_recipe_failed
+            from pipeline.recipe import _sha1 as _recipe_sha1, _fingerprint_input as _recipe_fp
             # Debug: 先載入 recipe 看詳細匹配狀況
-            _raw = _load_recipe(pipeline_id, step_name)
+            _raw = get_recipe(pipeline_id, step_name)
             if _raw:
-                from pipeline.recipe import _sha1 as _recipe_sha1, _fingerprint_input as _recipe_fp
                 _cur_hash = _recipe_sha1(task_description)
                 _cur_fps = {p: _recipe_fp(p) for p in input_paths}
-                if _raw.disabled:
+                saved_fps = _raw["input_fingerprints"]
+                if isinstance(saved_fps, str):
+                    import json as _json
+                    saved_fps = _json.loads(saved_fps)
+                if _raw["disabled"]:
                     logger.info(f"[{step_name}] 📖 Recipe 存在但已停用")
-                elif _raw.task_hash != _cur_hash:
-                    logger.info(f"[{step_name}] 📖 Recipe 存在但 task_hash 不符（saved={_raw.task_hash}, current={_cur_hash}）")
-                elif _cur_fps != _raw.input_fingerprints:
+                elif _raw["task_hash"] != _cur_hash:
+                    logger.info(f"[{step_name}] 📖 Recipe 存在但 task_hash 不符（saved={_raw['task_hash']}, current={_cur_hash}）")
+                elif _cur_fps != saved_fps:
                     logger.info(f"[{step_name}] 📖 Recipe 存在但輸入指紋不符")
-                    for k in set(list(_cur_fps.keys()) + list(_raw.input_fingerprints.keys())):
-                        sv = _raw.input_fingerprints.get(k, '(無)')
+                    for k in set(list(_cur_fps.keys()) + list(saved_fps.keys())):
+                        sv = saved_fps.get(k, '(無)')
                         cv = _cur_fps.get(k, '(無)')
                         if sv != cv:
                             logger.info(f"[{step_name}]   {k}: saved={sv} → current={cv}")
             else:
                 logger.debug(f"[{step_name}] 📖 無 Recipe 紀錄")
-            cached = match_recipe(pipeline_id, step_name, task_description, input_paths)
+            _fp = {p: _recipe_fp(p) for p in input_paths}
+            cached = match_recipe(pipeline_id, step_name, _recipe_sha1(task_description), _fp)
             if cached:
                 logger.info(
-                    f"[{step_name}] 📖 找到快取 recipe (成功 {cached.success_count} 次, "
-                    f"平均 {cached.avg_runtime_sec:.1f}s)，跳過 LLM 直接執行"
+                    f"[{step_name}] 📖 找到快取 recipe (成功 {cached['success_count']} 次, "
+                    f"平均 {cached['avg_runtime_sec']:.1f}s)，跳過 LLM 直接執行"
                 )
                 import time as _time
                 t0 = _time.time()
                 loop = asyncio.get_event_loop()
                 tool_result = await loop.run_in_executor(
-                    None, lambda: _skill_run_python(cached.code, cwd=working_dir)
+                    None, lambda: _skill_run_python(cached["code"], cwd=working_dir)
                 )
                 runtime = _time.time() - t0
                 # 成功條件：輸出檔存在（若有指定）且無 [exit code: X]
@@ -590,8 +598,10 @@ async def execute_step_with_skill(
                 if ok and output_path:
                     ok = Path(output_path).exists()
                 if ok:
-                    save_recipe(pipeline_id, step_name, task_description, input_paths,
-                                cached.code, output_path, runtime)
+                    import sys as _sys
+                    save_recipe(pipeline_id, step_name, _recipe_sha1(task_description),
+                                _fp, output_path, cached["code"],
+                                f"{_sys.version_info.major}.{_sys.version_info.minor}", runtime)
                     logger.info(f"[{step_name}] ✅ Recipe 重跑成功（{runtime:.1f}s）")
                     return ExecResult(exit_code=0, stdout=tool_result, stderr="__RECIPE_HIT__")
                 else:
@@ -618,13 +628,14 @@ async def execute_step_with_skill(
    print("完成")
    </input>
 
-2. run_shell — 執行 Shell 命令（在工作目錄下執行）
+2. run_shell — 執行系統命令（在工作目錄下執行）
    用法：<tool>run_shell</tool>
    <input>wc -l output.csv</input>
+   注意：盡量用 run_python 代替 run_shell，因為 Python 是跨平台的，Shell 命令在不同系統上可能不同。
 
 3. read_file — 讀取檔案內容（路徑不要加引號）
    用法：<tool>read_file</tool>
-   <input>/Users/hadytang/ai_output/some_file.txt</input>
+   <input>path/to/some_file.txt</input>
 
 4. done — 任務完成，回報結果
    用法：<tool>done</tool>
@@ -646,17 +657,28 @@ async def execute_step_with_skill(
 - 使用 matplotlib.pyplot 時，務必在最前面加 `import matplotlib; matplotlib.use('Agg')` 以避免 GUI 問題
 - boxplot 的 `labels` 參數已在新版棄用，請改用 `tick_labels`
 - 繪製分組箱形圖時，需要先將資料按分組欄位 pivot/reshape，再分別傳入各組資料
-- 中文顯示已設定好字型（PingFang HK），無需額外處理
+- 中文顯示：macOS 使用 'PingFang HK' 或 'Arial Unicode MS'；Windows 使用 'Microsoft JhengHei'（微軟正黑體）或 'SimHei'
+  跨平台安全寫法：
+  ```
+  import matplotlib
+  for font in ['PingFang HK', 'Microsoft JhengHei', 'SimHei', 'Arial Unicode MS']:
+      try:
+          matplotlib.font_manager.findfont(font, fallback_to_default=False)
+          matplotlib.rcParams['font.family'] = font
+          break
+      except: pass
+  ```
 - 繪圖完成後務必呼叫 `plt.savefig(路徑, dpi=150, bbox_inches='tight')` 並 `plt.close()`
 
 【重要規則】
 - **嚴格遵守任務描述中指定的欄位名稱、檔案路徑、數值範圍等具體要求，不得自行更改**
 - **所有檔案一律使用絕對路徑存取（根據工作目錄和輸出路徑提示）**
+- **路徑處理：一律使用 `pathlib.Path` 或 `os.path.join` 組合路徑，不要用字串拼接 `/`**
 - **只使用上方列出的已安裝套件，不要安裝新套件**
 - **絕對不要執行 sudo、pip install、apt 等安裝命令**
-- **要執行其他 Python 腳本時，必須用 `sys.executable` 而非寫死 `python3`，避免 PATH 解析到錯誤的 interpreter**
+- **要執行其他 Python 腳本時，必須用 `sys.executable` 而非寫死 `python3` 或 `python`，避免 PATH 解析到錯誤的 interpreter**
   正確：`subprocess.run([sys.executable, "script.py"], ...)`
-  錯誤：`subprocess.run(["python3", "script.py"], ...)`
+  錯誤：`subprocess.run(["python3", "script.py"], ...)` 或 `subprocess.run(["python", "script.py"], ...)`
 - **產生隨機資料時，確保需要唯一的欄位（如姓名）不會重複。正確做法：先用集合或列表生成所有不重複的組合，再用 random.sample 取出所需數量。錯誤做法：在迴圈中用 random.choice 逐一組合（會產生重複）**
 
 【執行策略】
@@ -774,11 +796,18 @@ async def execute_step_with_skill(
                     # 成功 → 儲存 recipe 供下次快速重跑
                     if success and pipeline_id and last_successful_code:
                         try:
-                            from pipeline.recipe import save_recipe
+                            import sys as _sys2
+                            from db import save_recipe as _db_save_recipe
+                            from pipeline.recipe import _sha1 as _recipe_sha1, _fingerprint_input as _recipe_fp
                             runtime = _time.time() - skill_start_time
-                            save_recipe(
-                                pipeline_id, step_name, task_description, input_paths,
-                                last_successful_code, output_path, runtime,
+                            _fp = {}
+                            for p in (input_paths or []):
+                                _fp[str(p)] = _recipe_fp(p)
+                            _db_save_recipe(
+                                pipeline_id, step_name, _recipe_sha1(task_description),
+                                _fp, output_path, last_successful_code,
+                                f"{_sys2.version_info.major}.{_sys2.version_info.minor}",
+                                runtime,
                             )
                         except Exception as e:
                             logger.warning(f"[{step_name}] Recipe 儲存失敗：{e}")

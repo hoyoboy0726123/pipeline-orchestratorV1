@@ -146,11 +146,11 @@ export async function getPipelineRun(runId: string): Promise<PipelineRun> {
   return res.json()
 }
 
-export async function startPipeline(yamlContent: string, validate = true, useRecipe = false): Promise<{ run_id: string }> {
+export async function startPipeline(yamlContent: string, validate = true, useRecipe = false, workflowId?: string): Promise<{ run_id: string }> {
   const res = await fetch(`${BASE}/pipeline/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ yaml_content: yamlContent, validate, use_recipe: useRecipe }),
+    body: JSON.stringify({ yaml_content: yamlContent, validate, use_recipe: useRecipe, workflow_id: workflowId ?? null }),
   })
   if (!res.ok) {
     const err = await res.json()
@@ -257,10 +257,52 @@ export async function getAvailableModels(): Promise<AvailableModels> {
   return res.json()
 }
 
+// ── Workflows ───────────────────────────────────────────────
+export interface WorkflowData {
+  id: string
+  name: string
+  yaml: string
+  canvas: { nodes: any[]; edges: any[] }
+  validate: boolean
+  created_at: number
+  updated_at: number
+}
+
+export async function listWorkflows(): Promise<WorkflowData[]> {
+  const res = await fetch(`${BASE}/workflows`)
+  if (!res.ok) throw new Error('讀取工作流失敗')
+  return res.json()
+}
+
+export async function createWorkflowApi(name: string = '新工作流', canvas?: { nodes: any[]; edges: any[] }, validate = false): Promise<WorkflowData> {
+  const res = await fetch(`${BASE}/workflows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, canvas, validate }),
+  })
+  if (!res.ok) throw new Error('建立工作流失敗')
+  return res.json()
+}
+
+export async function updateWorkflowApi(id: string, patch: { name?: string; canvas?: any; validate?: boolean; yaml?: string }): Promise<WorkflowData> {
+  const res = await fetch(`${BASE}/workflows/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) throw new Error('更新工作流失敗')
+  return res.json()
+}
+
+export async function deleteWorkflowApi(id: string, cascade = true): Promise<void> {
+  const res = await fetch(`${BASE}/workflows/${id}?cascade=${cascade}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('刪除工作流失敗')
+}
+
 // ── Recipe Book ─────────────────────────────────────────────
 export interface Recipe {
   recipe_id: string
-  pipeline_id: string
+  workflow_id: string
   step_name: string
   task_hash: string
   input_fingerprints: Record<string, string>
@@ -282,16 +324,16 @@ export async function listRecipes(): Promise<Recipe[]> {
   return res.json()
 }
 
-export async function deleteRecipe(pipelineName: string, stepName: string): Promise<void> {
-  const res = await fetch(`${BASE}/recipes/${encodeURIComponent(pipelineName)}/${encodeURIComponent(stepName)}`, {
+export async function deleteRecipe(workflowId: string, stepName: string): Promise<void> {
+  const res = await fetch(`${BASE}/recipes/${encodeURIComponent(workflowId)}/${encodeURIComponent(stepName)}`, {
     method: 'DELETE',
   })
   if (!res.ok) throw new Error('刪除 recipe 失敗')
 }
 
-export async function deletePipelineRecipes(pipelineName: string): Promise<number> {
-  const res = await fetch(`${BASE}/recipes/${encodeURIComponent(pipelineName)}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error('刪除 pipeline recipes 失敗')
+export async function deleteWorkflowRecipes(workflowId: string): Promise<number> {
+  const res = await fetch(`${BASE}/recipes/${encodeURIComponent(workflowId)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('刪除 workflow recipes 失敗')
   const data = await res.json()
   return data.deleted_count ?? 0
 }

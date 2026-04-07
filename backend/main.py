@@ -27,6 +27,9 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
+    from db import init_db
+    init_db()
+    print("✅ SQLite 資料庫已初始化")
     await sched_start()
     print("✅ Pipeline Scheduler 已啟動")
 
@@ -122,32 +125,83 @@ async def get_available_models():
     }
 
 
+# ── Workflows CRUD ──────────────────────────────────────────
+class WorkflowRequest(BaseModel):
+    name: str = "新工作流"
+    canvas: Optional[dict] = None
+    validate: bool = False
+
+
+class WorkflowUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    canvas: Optional[dict] = None
+    validate: Optional[bool] = None
+    yaml: Optional[str] = None
+
+
+@app.get("/workflows")
+async def api_list_workflows():
+    from db import list_workflows
+    return list_workflows()
+
+
+@app.post("/workflows")
+async def api_create_workflow(req: WorkflowRequest):
+    from db import create_workflow
+    return create_workflow(name=req.name, canvas=req.canvas, validate=req.validate)
+
+
+@app.get("/workflows/{wf_id}")
+async def api_get_workflow(wf_id: str):
+    from db import get_workflow
+    wf = get_workflow(wf_id)
+    if not wf:
+        raise HTTPException(status_code=404, detail="找不到工作流")
+    return wf
+
+
+@app.put("/workflows/{wf_id}")
+async def api_update_workflow(wf_id: str, req: WorkflowUpdateRequest):
+    from db import update_workflow
+    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    wf = update_workflow(wf_id, patch)
+    if not wf:
+        raise HTTPException(status_code=404, detail="找不到工作流")
+    return wf
+
+
+@app.delete("/workflows/{wf_id}")
+async def api_delete_workflow(wf_id: str, cascade: bool = True):
+    from db import delete_workflow
+    delete_workflow(wf_id, cascade=cascade)
+    return {"deleted": True, "cascade": cascade}
+
+
 # ── Recipe Book ──────────────────────────────────────────────
 @app.get("/recipes")
-async def list_all_recipes():
-    from pipeline.recipe import list_recipes
-    return list_recipes()
+async def api_list_recipes(workflow_id: Optional[str] = None):
+    from db import list_recipes
+    return list_recipes(workflow_id)
 
 
-@app.delete("/recipes/{pipeline_name}/{step_name}")
-async def delete_one_recipe(pipeline_name: str, step_name: str):
-    from pipeline.recipe import delete_recipe
-    ok = delete_recipe(pipeline_name, step_name)
+@app.get("/recipes/status/{workflow_id}")
+async def api_recipe_status(workflow_id: str, steps: str = ""):
+    from db import get_recipe_status
+    step_names = [s.strip() for s in steps.split(",") if s.strip()] if steps else []
+    return get_recipe_status(workflow_id, step_names)
+
+
+@app.delete("/recipes/{workflow_id}/{step_name}")
+async def api_delete_recipe(workflow_id: str, step_name: str):
+    from db import delete_recipe
+    ok = delete_recipe(workflow_id, step_name)
     return {"deleted": ok}
 
 
-@app.get("/recipes/status/{pipeline_name}")
-async def get_recipe_status(pipeline_name: str, steps: str = ""):
-    """查詢 pipeline 的 recipe 覆蓋狀態。steps 以逗號分隔的 skill step 名稱。"""
-    from pipeline.recipe import get_pipeline_recipe_status
-    step_names = [s.strip() for s in steps.split(",") if s.strip()] if steps else []
-    return get_pipeline_recipe_status(pipeline_name, step_names)
-
-
-@app.delete("/recipes/{pipeline_name}")
-async def delete_pipeline_all_recipes(pipeline_name: str):
-    from pipeline.recipe import delete_pipeline_recipes
-    count = delete_pipeline_recipes(pipeline_name)
+@app.delete("/recipes/{workflow_id}")
+async def api_delete_workflow_recipes(workflow_id: str):
+    from db import delete_workflow_recipes
+    count = delete_workflow_recipes(workflow_id)
     return {"deleted_count": count}
 
 
@@ -183,7 +237,9 @@ async def fs_check_venv(dir: str):
         target.relative_to(Path.home().resolve())
     except ValueError:
         raise HTTPException(status_code=400, detail="只允許在 home 目錄下操作")
-    venv_python = target / ".venv" / "bin" / "python"
+    import os as _os
+    venv_subdir = "Scripts" if _os.name == "nt" else "bin"
+    venv_python = target / ".venv" / venv_subdir / ("python.exe" if _os.name == "nt" else "python")
     if venv_python.exists():
         return {"has_venv": True, "python_path": str(venv_python)}
     return {"has_venv": False, "python_path": None}
@@ -194,6 +250,7 @@ class PipelineRunRequest(BaseModel):
     yaml_content: str
     validate: bool = True
     use_recipe: bool = False  # True = 快速模式：recipe 命中時跳過 LLM 驗證
+    workflow_id: Optional[str] = None  # 關聯工作流 ID
 
 
 class PipelineDecisionRequest(BaseModel):
@@ -225,12 +282,14 @@ async def start_pipeline(req: PipelineRunRequest):
     _, log_path = create_run_logger(run_id, config.name)
     config_d = config.model_dump()
     config_d["_use_recipe"] = req.use_recipe  # 傳遞快速模式旗標
+    config_d["_workflow_id"] = req.workflow_id  # 關聯工作流
     run = PRun(
         run_id=run_id,
         pipeline_name=config.name,
         config_dict=config_d,
         telegram_chat_id=0,
         log_path=log_path,
+        workflow_id=req.workflow_id,
     )
     get_store().save(run)
 

@@ -8,7 +8,7 @@ import Link from 'next/link'
 import { toast } from 'sonner'
 import ReactMarkdown from 'react-markdown'
 import { useWorkflowStore } from './_store'
-import { pipelineChat } from '@/lib/api'
+import { pipelineChat, createWorkflowApi } from '@/lib/api'
 
 // ── AI Chat Message Type ─────────────────────────────────────────────────────
 interface ChatMsg {
@@ -116,25 +116,51 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
     if (showChat) chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, showChat])
 
-  // 初始化：Zustand persist 水化完成後，若仍無工作流才建立
+  // 初始化：從 API 載入工作流，並遷移 localStorage 舊資料
   useEffect(() => {
-    const unsub = useWorkflowStore.persist.onFinishHydration(() => {
+    const init = async () => {
+      // 1) 先嘗試遷移 localStorage 的工作流到後端
+      const LS_KEY = 'pipeline-workflows-v1'
+      try {
+        const raw = localStorage.getItem(LS_KEY)
+        if (raw) {
+          const parsed = JSON.parse(raw)
+          const oldWorkflows: Array<{ id: string; name: string; nodes: any[]; edges: any[]; validate: boolean }> = parsed?.state?.workflows ?? []
+          if (oldWorkflows.length > 0) {
+            let migrated = 0
+            for (const wf of oldWorkflows) {
+              try {
+                await createWorkflowApi(
+                  wf.name,
+                  { nodes: wf.nodes ?? [], edges: wf.edges ?? [] },
+                  wf.validate ?? false,
+                )
+                migrated++
+              } catch { /* 單筆失敗不中斷 */ }
+            }
+            if (migrated > 0) {
+              toast.success(`已從瀏覽器遷移 ${migrated} 個工作流到資料庫`)
+              // 只有成功遷移才清除 localStorage
+              localStorage.removeItem(LS_KEY)
+            }
+          }
+        }
+      } catch { /* localStorage 讀取失敗不中斷 */ }
+
+      // 2) 從 API 載入
+      await useWorkflowStore.getState().fetchWorkflows()
       if (useWorkflowStore.getState().workflows.length === 0) {
-        createWorkflow('我的第一個工作流')
+        await createWorkflow('我的第一個工作流')
       }
-    })
-    // 若已經水化完成（重新整理後），直接檢查
-    if (useWorkflowStore.persist.hasHydrated() && useWorkflowStore.getState().workflows.length === 0) {
-      createWorkflow('我的第一個工作流')
     }
-    return unsub
+    init()
   }, []) // eslint-disable-line
 
-  const handleDelete = (id: string, name: string) => {
-    if (!confirm(`確定刪除「${name}」？`)) return
-    removeWorkflow(id)
-    if (workflows.length <= 1) {
-      createWorkflow('新工作流')
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`確定刪除「${name}」？此操作會一併刪除相關的 Recipe 和執行紀錄。`)) return
+    await removeWorkflow(id)
+    if (useWorkflowStore.getState().workflows.length === 0) {
+      await createWorkflow('新工作流')
     }
   }
 
@@ -194,7 +220,7 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
       {/* ── New Workflow Button ── */}
       <div className="px-3 pt-3 pb-2">
         <button
-          onClick={() => createWorkflow('新工作流')}
+          onClick={() => { createWorkflow('新工作流') }}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 transition-colors shadow-sm"
         >
           <Plus className="w-3.5 h-3.5" />

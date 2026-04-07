@@ -288,7 +288,7 @@ export default function PipelinePage() {
       setTimeout(() => {
         savingRef.current = false
         rfInstanceRef.current?.fitView({ padding: 0.3, duration: 300 })
-      }, 100)
+      }, 1000)
     }, 30)
     return () => clearTimeout(timer)
   }, [activeId]) // eslint-disable-line
@@ -322,7 +322,7 @@ export default function PipelinePage() {
         return
       }
       try {
-        const status = await getRecipeStatus(pipelineName, skillSteps)
+        const status = await getRecipeStatus(activeId || pipelineName, skillSteps)
         const map: Record<string, boolean> = {}
         for (const [name, info] of Object.entries(status.steps)) {
           if (info.has_recipe) map[name] = true
@@ -515,7 +515,7 @@ export default function PipelinePage() {
     const skillSteps = steps.filter(s => s.skillMode).map(s => s.name)
     if (skillSteps.length > 0) {
       try {
-        const status = await getRecipeStatus(pipelineName, skillSteps)
+        const status = await getRecipeStatus(activeId || pipelineName, skillSteps)
         setRecipeStatus(status)
       } catch {
         setRecipeStatus(null)
@@ -533,7 +533,7 @@ export default function PipelinePage() {
     setRunStatus('running')
     useRunStatusStore.getState().resetAll()
     try {
-      const res = await startPipeline(yaml, validate, useRecipe)
+      const res = await startPipeline(yaml, validate, useRecipe, activeId ?? undefined)
       runIdRef.current = res.run_id
       toast.success(`Pipeline 已啟動（ID: ${res.run_id}）${useRecipe ? ' ⚡ 快速模式' : ''}`)
       pollStatus(res.run_id)
