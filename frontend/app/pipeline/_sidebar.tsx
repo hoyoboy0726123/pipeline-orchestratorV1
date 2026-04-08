@@ -3,12 +3,14 @@ import { useState, useRef, useEffect } from 'react'
 import {
   Plus, Workflow, X, Bot, ChevronUp, ChevronDown,
   Send, Loader2, Pencil, Check, Trash2, Settings, BookOpen,
+  Download, Upload,
 } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import ReactMarkdown from 'react-markdown'
 import { useWorkflowStore } from './_store'
-import { pipelineChat, createWorkflowApi } from '@/lib/api'
+import { pipelineChat, createWorkflowApi, exportWorkflowUrl, importWorkflow, getPipelineScheduled, getPipelineRuns } from '@/lib/api'
+import type { ScheduledTask } from '@/lib/types'
 
 // ── AI Chat Message Type ─────────────────────────────────────────────────────
 interface ChatMsg {
@@ -18,15 +20,39 @@ interface ChatMsg {
   yaml?: string | null
 }
 
+// ── Countdown Hook ──────────────────────────────────────────────────────────
+function useCountdown(nextRun: string | null) {
+  const [text, setText] = useState('')
+  useEffect(() => {
+    if (!nextRun) { setText(''); return }
+    const calc = () => {
+      const diff = new Date(nextRun).getTime() - Date.now()
+      if (diff <= 0) { setText('即將執行…'); return }
+      const h = Math.floor(diff / 3600000)
+      const m = Math.floor((diff % 3600000) / 60000)
+      const s = Math.floor((diff % 60000) / 1000)
+      if (h > 0) setText(`${h}時${m}分後執行`)
+      else if (m > 0) setText(`${m}分${s}秒後執行`)
+      else setText(`${s}秒後執行`)
+    }
+    calc()
+    const iv = setInterval(calc, 1000)
+    return () => clearInterval(iv)
+  }, [nextRun])
+  return text
+}
+
 // ── Workflow List Item ───────────────────────────────────────────────────────
 function WorkflowItem({
-  id, name, active, updatedAt,
-  onSelect, onRename, onDelete,
+  id, name, active, updatedAt, nextRun, runStatus,
+  onSelect, onRename, onDelete, onExport,
 }: {
-  id: string; name: string; active: boolean; updatedAt: number
+  id: string; name: string; active: boolean; updatedAt: number; nextRun: string | null
+  runStatus: 'idle' | 'running' | 'completed' | 'failed' | null
   onSelect: () => void
   onRename: (n: string) => void
   onDelete: () => void
+  onExport: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft]     = useState(name)
@@ -36,6 +62,8 @@ function WorkflowItem({
   useEffect(() => { setDraft(name) }, [name])
 
   const commit = () => { onRename(draft.trim() || name); setEditing(false) }
+
+  const countdown = useCountdown(nextRun)
 
   const relTime = (() => {
     const diff = Date.now() - updatedAt
@@ -67,15 +95,37 @@ function WorkflowItem({
         ) : (
           <p className={`text-sm font-medium truncate ${active ? 'text-indigo-700' : 'text-gray-700'}`}>{name}</p>
         )}
-        <p className="text-xs text-gray-400 mt-0.5">{relTime}</p>
+        {runStatus === 'running' ? (
+          <p className="text-xs text-indigo-500 font-medium mt-0.5 flex items-center gap-1">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            執行中…
+          </p>
+        ) : runStatus === 'completed' ? (
+          <p className="text-xs text-emerald-500 font-medium mt-0.5">已完成</p>
+        ) : runStatus === 'failed' ? (
+          <p className="text-xs text-red-500 font-medium mt-0.5">執行失敗</p>
+        ) : countdown ? (
+          <p className="text-xs text-amber-500 font-medium mt-0.5 flex items-center gap-1">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+            {countdown}
+          </p>
+        ) : (
+          <p className="text-xs text-gray-400 mt-0.5">{relTime}</p>
+        )}
       </div>
       {/* Action buttons */}
       <div className="shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
         {!editing && (
-          <button onClick={e => { e.stopPropagation(); setEditing(true) }}
-            className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600">
-            <Pencil className="w-3 h-3" />
-          </button>
+          <>
+            <button onClick={e => { e.stopPropagation(); setEditing(true) }}
+              className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600" title="重新命名">
+              <Pencil className="w-3 h-3" />
+            </button>
+            <button onClick={e => { e.stopPropagation(); onExport() }}
+              className="p-1 rounded hover:bg-blue-50 text-gray-400 hover:text-blue-600" title="匯出">
+              <Download className="w-3 h-3" />
+            </button>
+          </>
         )}
         {editing && (
           <button onClick={e => { e.stopPropagation(); commit() }}
@@ -84,7 +134,7 @@ function WorkflowItem({
           </button>
         )}
         <button onClick={e => { e.stopPropagation(); onDelete() }}
-          className="p-1 rounded hover:bg-red-50 text-gray-400 hover:text-red-500">
+          className="p-1 rounded hover:bg-red-50 text-gray-400 hover:text-red-500" title="刪除">
           <Trash2 className="w-3 h-3" />
         </button>
       </div>
@@ -110,6 +160,52 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
   const [input, setInput]     = useState('')
   const [loading, setLoading] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
+
+  // 排程倒數：定期查詢排程並建立 name → nextRun 對應
+  const [scheduleMap, setScheduleMap] = useState<Record<string, string>>({})
+  useEffect(() => {
+    const fetchSchedules = async () => {
+      try {
+        const tasks = await getPipelineScheduled()
+        const map: Record<string, string> = {}
+        for (const t of tasks) {
+          if (t.next_run && t.name) map[t.name] = t.next_run
+        }
+        setScheduleMap(map)
+      } catch { /* ignore */ }
+    }
+    fetchSchedules()
+    const iv = setInterval(fetchSchedules, 15000)
+    return () => clearInterval(iv)
+  }, [])
+
+  // 各工作流執行狀態：name → 'running' | 'completed' | 'failed'
+  const [runStatusMap, setRunStatusMap] = useState<Record<string, 'running' | 'completed' | 'failed'>>({})
+  useEffect(() => {
+    const fetchRuns = async () => {
+      try {
+        const runs = await getPipelineRuns()
+        const map: Record<string, 'running' | 'completed' | 'failed'> = {}
+        const recentThreshold = 3 * 60 * 1000 // 完成/失敗狀態只顯示 3 分鐘
+        for (const r of runs) {
+          const name = r.pipeline_name
+          if (r.status === 'running' || r.status === 'awaiting_human') {
+            map[name] = 'running'
+          } else if (!map[name] && r.ended_at) {
+            const age = Date.now() - new Date(r.ended_at).getTime()
+            if (age < recentThreshold) {
+              if (r.status === 'completed') map[name] = 'completed'
+              else if (r.status === 'failed' || r.status === 'aborted') map[name] = 'failed'
+            }
+          }
+        }
+        setRunStatusMap(map)
+      } catch { /* ignore */ }
+    }
+    fetchRuns()
+    const iv = setInterval(fetchRuns, 3000)
+    return () => clearInterval(iv)
+  }, [])
 
   // 自動滾到底部
   useEffect(() => {
@@ -161,6 +257,46 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
     await removeWorkflow(id)
     if (useWorkflowStore.getState().workflows.length === 0) {
       await createWorkflow('新工作流')
+    }
+  }
+
+  const handleExport = async (id: string) => {
+    try {
+      const res = await fetch(exportWorkflowUrl(id))
+      if (!res.ok) throw new Error('匯出失敗')
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const disposition = res.headers.get('Content-Disposition')
+      const match = disposition?.match(/filename\*=UTF-8''(.+)/)
+      a.download = match ? decodeURIComponent(match[1]) : 'workflow.zip'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err: any) {
+      toast.error(err.message || '匯出失敗')
+    }
+  }
+
+  const importRef = useRef<HTMLInputElement>(null)
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = '' // 允許重複選同一檔案
+    try {
+      const res = await importWorkflow(file)
+      await useWorkflowStore.getState().fetchWorkflows()
+      useWorkflowStore.getState().setActive(res.workflow.id)
+      let msg = `已匯入「${res.workflow.name}」`
+      if (res.recipe_count > 0) msg += `，含 ${res.recipe_count} 個 Recipe`
+      toast.success(msg)
+      if (res.has_local_scripts) {
+        toast.info('此工作流包含本地腳本步驟，請先確認相關腳本檔案已準備好才能執行', { duration: 6000 })
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '匯入失敗')
     }
   }
 
@@ -217,15 +353,24 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
         </Link>
       </div>
 
-      {/* ── New Workflow Button ── */}
-      <div className="px-3 pt-3 pb-2">
+      {/* ── New / Import Workflow Buttons ── */}
+      <div className="px-3 pt-3 pb-2 flex gap-1.5">
         <button
           onClick={() => { createWorkflow('新工作流') }}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 transition-colors shadow-sm"
+          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 text-white rounded-xl text-xs font-medium hover:bg-indigo-700 transition-colors shadow-sm"
         >
           <Plus className="w-3.5 h-3.5" />
-          新增工作流
+          新增
         </button>
+        <button
+          onClick={() => importRef.current?.click()}
+          className="flex items-center justify-center gap-1.5 px-3 py-2 border border-gray-200 text-gray-600 rounded-xl text-xs font-medium hover:bg-gray-50 transition-colors"
+          title="匯入工作流 (.zip)"
+        >
+          <Upload className="w-3.5 h-3.5" />
+          匯入
+        </button>
+        <input ref={importRef} type="file" accept=".zip" className="hidden" onChange={handleImport} />
       </div>
 
       {/* ── Workflow List ── */}
@@ -240,9 +385,12 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
             name={wf.name}
             active={wf.id === activeId}
             updatedAt={wf.updatedAt}
+            nextRun={scheduleMap[wf.name] ?? null}
+            runStatus={runStatusMap[wf.name] ?? null}
             onSelect={() => setActive(wf.id)}
             onRename={name => updateWorkflow(wf.id, { name })}
             onDelete={() => handleDelete(wf.id, wf.name)}
+            onExport={() => handleExport(wf.id)}
           />
         ))}
       </div>

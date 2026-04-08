@@ -129,7 +129,7 @@ def _deterministic_validate(step, exec_result, logger) -> ValidationResult:
 
     # 2. 輸出檔存在 + 大小
     if step.output and step.output.path:
-        p = _Path(step.output.path)
+        p = _Path(step.output.path).expanduser()
         if not p.exists():
             return ValidationResult(
                 status="failed",
@@ -258,6 +258,7 @@ async def run_pipeline(
                     working_dir=wd or None,
                     prev_outputs=completed_outputs if completed_outputs else None,
                     pipeline_id=workflow_id or config.name,
+                    use_recipe=use_recipe,
                 )
             else:
                 exec_result = await execute_step(

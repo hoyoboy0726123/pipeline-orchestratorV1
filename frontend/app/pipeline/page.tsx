@@ -30,6 +30,7 @@ import { useWorkflowStore } from './_store'
 import {
   startPipeline, getPipelineRun, resumePipeline,
   createPipelineSchedule, getPipelineLog,
+  getPipelineRuns,
   getRecipeStatus, type RecipeStatus,
 } from '@/lib/api'
 import type { PipelineRun } from '@/lib/types'
@@ -41,7 +42,9 @@ const nodeTypes = {
 }
 
 // ── Schedule Dialog ───────────────────────────────────────────────────────────
-function ScheduleDialog({ yaml, pipelineName, onClose }: { yaml: string; pipelineName: string; onClose: () => void }) {
+function ScheduleDialog({ yaml, pipelineName, recipeStatus, onClose }: {
+  yaml: string; pipelineName: string; recipeStatus: RecipeStatus | null; onClose: () => void
+}) {
   const now = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
   const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
@@ -51,7 +54,10 @@ function ScheduleDialog({ yaml, pipelineName, onClose }: { yaml: string; pipelin
   const [onceDate, setDate]   = useState(todayStr)
   const [onceTime, setTime]   = useState(timeStr)
   const [cronExpr, setCron]   = useState('0 9 * * 1-5')
+  const [useRecipe, setUseRecipe] = useState(false)
   const [loading, setLoading] = useState(false)
+
+  const hasRecipe = recipeStatus?.has_recipes ?? false
 
   const handleSave = async () => {
     setLoading(true)
@@ -68,9 +74,10 @@ function ScheduleDialog({ yaml, pipelineName, onClose }: { yaml: string; pipelin
         yaml_content: yaml,
         schedule_type: mode,
         schedule_expr: expr,
-        validate: false,
+        validate: !useRecipe,
+        use_recipe: useRecipe,
       })
-      toast.success('排程已建立')
+      toast.success(`排程已建立${useRecipe ? '（快速模式）' : '（完整模式）'}`)
       onClose()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '建立失敗')
@@ -85,13 +92,44 @@ function ScheduleDialog({ yaml, pipelineName, onClose }: { yaml: string; pipelin
           <span className="font-semibold text-gray-800">設定排程</span>
         </div>
         <div className="p-5 space-y-4">
-          <div className="flex gap-2">
-            {(['once', 'cron'] as const).map(m => (
-              <button key={m} onClick={() => setMode(m)}
-                className={`flex-1 py-1.5 rounded-lg text-sm font-medium border transition-colors
-                  ${mode === m ? 'bg-indigo-600 text-white border-indigo-600' : 'text-gray-600 border-gray-200 hover:border-indigo-400'}`}
-              >{m === 'once' ? '一次性' : '週期（Cron）'}</button>
-            ))}
+          {/* 執行模式選擇 */}
+          <div>
+            <label className="text-xs font-medium text-gray-500 mb-2 block">執行模式</label>
+            <div className="flex gap-2">
+              <button onClick={() => setUseRecipe(false)}
+                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium border transition-colors flex items-center justify-center gap-1.5
+                  ${!useRecipe ? 'bg-indigo-600 text-white border-indigo-600' : 'text-gray-600 border-gray-200 hover:border-indigo-400'}`}
+              >
+                <Sparkles className="w-3.5 h-3.5" /> 完整模式
+              </button>
+              <button onClick={() => hasRecipe && setUseRecipe(true)}
+                disabled={!hasRecipe}
+                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium border transition-colors flex items-center justify-center gap-1.5
+                  ${useRecipe ? 'bg-emerald-600 text-white border-emerald-600' : hasRecipe ? 'text-gray-600 border-gray-200 hover:border-emerald-400' : 'text-gray-400 border-gray-100 bg-gray-50 cursor-not-allowed'}`}
+              >
+                <Zap className="w-3.5 h-3.5" /> 快速模式
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">
+              {useRecipe
+                ? '使用已快取的 Recipe 直接執行，跳過 LLM 驗證。'
+                : hasRecipe
+                  ? 'AI 重新生成程式碼 + 完整驗證。'
+                  : '尚無 Recipe，請先用完整模式成功執行一次。'}
+            </p>
+          </div>
+
+          {/* 排程類型 */}
+          <div>
+            <label className="text-xs font-medium text-gray-500 mb-2 block">排程類型</label>
+            <div className="flex gap-2">
+              {(['once', 'cron'] as const).map(m => (
+                <button key={m} onClick={() => setMode(m)}
+                  className={`flex-1 py-1.5 rounded-lg text-sm font-medium border transition-colors
+                    ${mode === m ? 'bg-indigo-600 text-white border-indigo-600' : 'text-gray-600 border-gray-200 hover:border-indigo-400'}`}
+                >{m === 'once' ? '一次性' : '週期（Cron）'}</button>
+              ))}
+            </div>
           </div>
           {mode === 'once' ? (
             <div className="flex gap-2">
@@ -277,6 +315,11 @@ export default function PipelinePage() {
     const wf = workflows.find(w => w.id === activeId)
     if (!wf) return
     savingRef.current = true
+    // 切換工作流前：清除上一個工作流的執行狀態
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+    runIdRef.current = null
+    setRunning(false)
+    useRunStatusStore.getState().resetAll()
     const timer = setTimeout(() => {
       setNodes(wf.nodes as AppNode[])
       setEdges(wf.edges)
@@ -292,6 +335,37 @@ export default function PipelinePage() {
     }, 30)
     return () => clearTimeout(timer)
   }, [activeId]) // eslint-disable-line
+
+  // 自動偵測背景執行中的 pipeline（排程觸發等），每 3 秒輪詢
+  const bgDetectRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  useEffect(() => {
+    if (bgDetectRef.current) clearInterval(bgDetectRef.current)
+    if (!pipelineName) return
+
+    const detect = async () => {
+      // 已在前端執行中就不重複偵測
+      if (runIdRef.current) return
+      try {
+        const runs = await getPipelineRuns()
+        const active = runs.find(
+          r => (r.status === 'running' || r.status === 'awaiting_human') && r.pipeline_name === pipelineName
+        )
+        if (active && !runIdRef.current) {
+          runIdRef.current = active.run_id
+          setRunning(true)
+          setRunStatus(active.status === 'awaiting_human' ? 'awaiting' : 'running')
+          setShowLog(true)
+          toast.info(`偵測到排程執行中`)
+          pollStatus(active.run_id)
+          pollRef.current = setInterval(() => pollStatus(active.run_id), 1500)
+        }
+      } catch { /* ignore */ }
+    }
+
+    detect()
+    bgDetectRef.current = setInterval(detect, 3000)
+    return () => { if (bgDetectRef.current) clearInterval(bgDetectRef.current) }
+  }, [pipelineName]) // eslint-disable-line
 
   // Auto-save 到 store（防抖 800ms）
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -588,6 +662,7 @@ export default function PipelinePage() {
       const done = data.status === 'completed' || data.status === 'failed' || data.status === 'aborted'
       if (done) {
         clearInterval(pollRef.current!)
+        runIdRef.current = null
         setRunning(false)
         toast.dismiss('awaiting')
         const success = data.status === 'completed'
@@ -708,7 +783,17 @@ export default function PipelinePage() {
 
         {/* Schedule */}
         <button
-          onClick={() => setShowSchedule(true)}
+          onClick={async () => {
+            const steps = flowToSteps(nodes, edges)
+            const skillSteps = steps.filter(s => s.skillMode).map(s => s.name)
+            if (skillSteps.length > 0) {
+              try {
+                const status = await getRecipeStatus(activeId || pipelineName, skillSteps)
+                setRecipeStatus(status)
+              } catch { setRecipeStatus(null) }
+            } else { setRecipeStatus(null) }
+            setShowSchedule(true)
+          }}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border border-gray-200 text-gray-600 hover:border-indigo-300 hover:text-indigo-600 transition-colors"
         >
           <Clock className="w-3.5 h-3.5" /> 排程
@@ -859,7 +944,7 @@ export default function PipelinePage() {
 
       {/* Schedule dialog */}
       {showSchedule && (
-        <ScheduleDialog yaml={getYaml()} pipelineName={pipelineName} onClose={() => setShowSchedule(false)} />
+        <ScheduleDialog yaml={getYaml()} pipelineName={pipelineName} recipeStatus={recipeStatus} onClose={() => setShowSchedule(false)} />
       )}
 
       {/* Run dialog */}

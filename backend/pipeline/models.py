@@ -59,7 +59,9 @@ class PipelineConfig(BaseModel):
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         # 支援頂層有 "pipeline:" 或直接是 {name, steps}
-        return cls(**data.get("pipeline", data))
+        raw = data.get("pipeline", data)
+        filtered = {k: v for k, v in raw.items() if not k.startswith("_")}
+        return cls(**filtered)
 
     @classmethod
     def from_dict(cls, data: dict) -> "PipelineConfig":

@@ -3,10 +3,11 @@ Pipeline Orchestrator — 獨立後端
 啟動：uvicorn main:app --host 0.0.0.0 --port 8002
 """
 import asyncio
+import json
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -175,6 +176,128 @@ async def api_delete_workflow(wf_id: str, cascade: bool = True):
     from db import delete_workflow
     delete_workflow(wf_id, cascade=cascade)
     return {"deleted": True, "cascade": cascade}
+
+
+# ── Workflow Export / Import ─────────────────────────────────
+
+@app.get("/workflows/{wf_id}/export")
+async def api_export_workflow(wf_id: str):
+    import io
+    import zipfile
+    from db import get_workflow, list_recipes
+    from fastapi.responses import StreamingResponse
+
+    wf = get_workflow(wf_id)
+    if not wf:
+        raise HTTPException(status_code=404, detail="找不到工作流")
+
+    recipes = list_recipes(wf_id)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # workflow.json
+        wf_export = {
+            "name": wf["name"],
+            "canvas": wf["canvas"],
+            "validate": wf["validate"],
+            "yaml": wf.get("yaml", ""),
+        }
+        zf.writestr("workflow.json", json.dumps(wf_export, ensure_ascii=False, indent=2))
+
+        # recipes/
+        for r in recipes:
+            recipe_data = {
+                "step_name": r["step_name"],
+                "task_hash": r["task_hash"],
+                "input_fingerprints": r["input_fingerprints"],
+                "output_path": r.get("output_path"),
+                "code": r["code"],
+                "python_version": r["python_version"],
+                "success_count": r["success_count"],
+                "avg_runtime_sec": r["avg_runtime_sec"],
+            }
+            safe_name = r["step_name"].replace("/", "_").replace("\\", "_")
+            zf.writestr(f"recipes/{safe_name}.json", json.dumps(recipe_data, ensure_ascii=False, indent=2))
+
+    buf.seek(0)
+    from urllib.parse import quote
+    safe_wf_name = wf["name"].replace(" ", "_").replace("/", "_")
+    encoded_name = quote(safe_wf_name)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=\"workflow.zip\"; filename*=UTF-8''{encoded_name}.zip"},
+    )
+
+
+@app.post("/workflows/import")
+async def api_import_workflow(file: UploadFile = File(...)):
+    import io
+    import zipfile
+    from db import create_workflow, save_recipe
+
+    content = await file.read()
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="無效的 ZIP 檔案")
+
+    # 讀取 workflow.json
+    if "workflow.json" not in zf.namelist():
+        raise HTTPException(status_code=400, detail="ZIP 中找不到 workflow.json")
+
+    wf_data = json.loads(zf.read("workflow.json"))
+
+    # 自動避免重名：若已存在相同名稱則加 (1), (2)...
+    from db import list_workflows
+    existing_names = {w["name"] for w in list_workflows()}
+    base_name = wf_data.get("name", "匯入的工作流")
+    final_name = base_name
+    counter = 1
+    while final_name in existing_names:
+        final_name = f"{base_name}({counter})"
+        counter += 1
+
+    wf = create_workflow(
+        name=final_name,
+        canvas=wf_data.get("canvas"),
+        validate=wf_data.get("validate", False),
+    )
+
+    # 匯入 recipes
+    recipe_count = 0
+    for name in zf.namelist():
+        if name.startswith("recipes/") and name.endswith(".json"):
+            r = json.loads(zf.read(name))
+            try:
+                save_recipe(
+                    workflow_id=wf["id"],
+                    step_name=r["step_name"],
+                    task_hash=r["task_hash"],
+                    input_fingerprints=r.get("input_fingerprints", {}),
+                    output_path=r.get("output_path"),
+                    code=r.get("code", ""),
+                    python_version=r.get("python_version", ""),
+                    runtime_sec=r.get("avg_runtime_sec", 0),
+                )
+                recipe_count += 1
+            except Exception:
+                pass
+
+    # 檢查是否有非 Skill 步驟（需要本地腳本）
+    has_local_scripts = False
+    nodes = wf_data.get("canvas", {}).get("nodes", [])
+    for node in nodes:
+        data = node.get("data", {})
+        if not data.get("skillMode", False) and data.get("batch", "").strip():
+            has_local_scripts = True
+            break
+
+    return {
+        "workflow": wf,
+        "recipe_count": recipe_count,
+        "has_local_scripts": has_local_scripts,
+    }
 
 
 # ── Recipe Book ──────────────────────────────────────────────
@@ -359,6 +482,7 @@ class PipelineScheduleRequest(BaseModel):
     schedule_type: str = "cron"
     schedule_expr: str = "0 8 * * *"
     validate: bool = True
+    use_recipe: bool = False
 
 
 @app.post("/pipeline/scheduled")
@@ -371,7 +495,8 @@ async def create_pipeline_schedule(req: PipelineScheduleRequest):
         data = yaml.safe_load(req.yaml_content)
         config_dict = data.get("pipeline", data)
         config_dict["validate"] = req.validate
-        PipelineConfig(**config_dict)
+        PipelineConfig(**{k: v for k, v in config_dict.items() if not k.startswith("_")})
+        config_dict["_use_recipe"] = req.use_recipe
         yaml_to_save = yaml.dump({"pipeline": config_dict}, allow_unicode=True, default_flow_style=False)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"YAML 格式錯誤：{e}")

@@ -66,10 +66,17 @@ async def _execute_task(task_id: str, task_prompt: str, output_format: str, save
 async def _execute_pipeline_task(task_id: str, yaml_path: str, chat_id: int):
     """執行 pipeline YAML 的排程入口"""
     try:
+        import yaml as _yaml
         from pipeline.models import PipelineConfig
         from pipeline.runner import run_pipeline
+        with open(yaml_path, encoding="utf-8") as f:
+            raw = _yaml.safe_load(f)
+        raw_dict = raw.get("pipeline", raw)
+        use_recipe = raw_dict.get("_use_recipe", False)
         config = PipelineConfig.from_yaml(yaml_path)
-        await run_pipeline(config_dict=config.model_dump(), chat_id=chat_id)
+        config_d = config.model_dump()
+        config_d["_use_recipe"] = use_recipe
+        await run_pipeline(config_dict=config_d, chat_id=chat_id)
         if task_id in _task_meta:
             _task_meta[task_id].last_run = datetime.now().isoformat()
     except Exception as e:

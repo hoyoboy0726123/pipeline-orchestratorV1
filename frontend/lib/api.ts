@@ -192,6 +192,7 @@ export async function createPipelineSchedule(req: {
   schedule_type: string
   schedule_expr: string
   validate?: boolean
+  use_recipe?: boolean
 }): Promise<ScheduledTask> {
   const res = await fetch(`${BASE}/pipeline/scheduled`, {
     method: 'POST',
@@ -297,6 +298,25 @@ export async function updateWorkflowApi(id: string, patch: { name?: string; canv
 export async function deleteWorkflowApi(id: string, cascade = true): Promise<void> {
   const res = await fetch(`${BASE}/workflows/${id}?cascade=${cascade}`, { method: 'DELETE' })
   if (!res.ok) throw new Error('刪除工作流失敗')
+}
+
+export function exportWorkflowUrl(id: string): string {
+  return `${BASE}/workflows/${id}/export`
+}
+
+export async function importWorkflow(file: File): Promise<{
+  workflow: WorkflowData
+  recipe_count: number
+  has_local_scripts: boolean
+}> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${BASE}/workflows/import`, { method: 'POST', body: form })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail ?? '匯入失敗')
+  }
+  return res.json()
 }
 
 // ── Recipe Book ─────────────────────────────────────────────

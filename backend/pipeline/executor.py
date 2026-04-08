@@ -524,6 +524,7 @@ async def execute_step_with_skill(
     working_dir: Optional[str] = None,
     prev_outputs: Optional[list] = None,
     pipeline_id: Optional[str] = None,
+    use_recipe: bool = True,
 ) -> ExecResult:
     """
     Skill 模式執行器：LLM 解讀自然語言任務描述，自主撰寫並執行程式碼。
@@ -553,7 +554,7 @@ async def execute_step_with_skill(
 
     # ── Recipe Book：檢查是否有可重用的成功快取 ────────────────────────────
     input_paths = [po["path"] for po in (prev_outputs or []) if po.get("path")]
-    if pipeline_id:
+    if pipeline_id and use_recipe:
         try:
             from db import get_recipe, match_recipe, save_recipe, mark_recipe_failed
             from pipeline.recipe import _sha1 as _recipe_sha1, _fingerprint_input as _recipe_fp
