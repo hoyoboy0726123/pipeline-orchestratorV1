@@ -6,7 +6,7 @@ import type { AiValidationData } from './_helpers'
 type AiValidationNode = Node<AiValidationData>
 
 function AiValidationNodeComponent({ data, selected }: NodeProps<AiValidationNode>) {
-  const color = '#8b5cf6'
+  const color = '#f59e0b'
 
   return (
     <div
@@ -18,21 +18,13 @@ function AiValidationNodeComponent({ data, selected }: NodeProps<AiValidationNod
           : '0 2px 8px rgba(0,0,0,0.10)',
       }}
     >
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="!w-3 !h-3 !rounded-full !border-2 !border-white"
-        style={{ background: color }}
-      />
+      <Handle type="target" position={Position.Left}
+        className="!w-3 !h-3 !rounded-full !border-2 !border-white" style={{ background: color }} />
 
       <div className="px-3 py-2 flex items-center gap-2" style={{ background: color }}>
-        <span className="text-white text-sm">✦</span>
+        <span className="text-white text-sm">✓</span>
         <span className="text-white font-semibold text-sm flex-1 truncate">AI 驗證</span>
-        {data.skillMode && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/20 text-white font-medium">
-            Skill
-          </span>
-        )}
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/20 text-white font-medium">驗證</span>
       </div>
 
       <div className="bg-white px-3 py-2.5">
@@ -51,12 +43,8 @@ function AiValidationNodeComponent({ data, selected }: NodeProps<AiValidationNod
         )}
       </div>
 
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!w-3 !h-3 !rounded-full !border-2 !border-white"
-        style={{ background: color }}
-      />
+      <Handle type="source" position={Position.Right}
+        className="!w-3 !h-3 !rounded-full !border-2 !border-white" style={{ background: color }} />
     </div>
   )
 }

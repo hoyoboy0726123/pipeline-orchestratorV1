@@ -16,15 +16,18 @@ import {
 import { toast } from 'sonner'
 import { Toaster } from 'sonner'
 
-import PipelineStepNode       from './_node'
+import ScriptStepNode         from './_scriptNode'
+import SkillStepNode          from './_skillNode'
 import AiValidationNodeComponent from './_aiValidationNode'
-import NodeConfigPanel        from './_panel'
+import ScriptConfigPanel      from './_scriptPanel'
+import SkillConfigPanel       from './_skillPanel'
 import AiValidationPanel      from './_aiValidationPanel'
 import Sidebar                from './_sidebar'
 import {
-  type PipelineNode, type AppNode, type StepData, type AiValidationData,
-  newStepData, newAiValidationData, stepsToFlow, flowToSteps,
-  stepsToYaml, parseYaml, stepColor,
+  type AppNode, type StepData, type SkillData, type AiValidationData,
+  type ScriptNode, type SkillNode,
+  newStepData, newSkillData, newAiValidationData, stepsToFlow, flowToSteps,
+  stepsToYaml, parseYaml,
 } from './_helpers'
 import { useWorkflowStore } from './_store'
 import {
@@ -37,7 +40,8 @@ import type { PipelineRun } from '@/lib/types'
 import { useRunStatusStore } from './_runStatus'
 
 const nodeTypes = {
-  pipelineStep: PipelineStepNode,
+  scriptStep: ScriptStepNode,
+  skillStep: SkillStepNode,
   aiValidation: AiValidationNodeComponent,
 }
 
@@ -289,7 +293,6 @@ export default function PipelinePage() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pipelineName, setPipelineName] = useState('my-pipeline')
-  const [validate, setValidate]   = useState(false)
   const [showYaml, setShowYaml]   = useState(false)
   const [showSchedule, setShowSchedule] = useState(false)
   const [showRunDialog, setShowRunDialog] = useState(false)
@@ -324,7 +327,6 @@ export default function PipelinePage() {
       setNodes(wf.nodes as AppNode[])
       setEdges(wf.edges)
       setPipelineName(wf.name)
-      setValidate(wf.validate)
       setSelectedId(null)
       setRunStatus('idle')
       setAwaitingRunId(null)
@@ -409,12 +411,6 @@ export default function PipelinePage() {
     return () => { if (recipeLoadTimer.current) clearTimeout(recipeLoadTimer.current) }
   }, [nodes, edges, pipelineName]) // eslint-disable-line
 
-  // 同步 validate 到 store
-  useEffect(() => {
-    if (savingRef.current || !activeId) return
-    updateWorkflow(activeId, { validate })
-  }, [validate]) // eslint-disable-line
-
   const selectedNode = nodes.find(n => n.id === selectedId)
 
   // ── 從 runStatus store 讀取 edges 動畫狀態 ─────────────────────────────────
@@ -431,19 +427,20 @@ export default function PipelinePage() {
     rfInstanceRef.current = inst
     setTimeout(() => inst.fitView({ padding: 0.3 }), 0)
   }, [])
-  const miniMapNodeColor = useCallback((n: { type?: string; data: unknown }) => {
-    if (n.type === 'aiValidation') return '#8b5cf6'
-    return stepColor((n.data as StepData).index)
+  const miniMapNodeColor = useCallback((n: { type?: string }) => {
+    if (n.type === 'aiValidation') return '#f59e0b'
+    if (n.type === 'skillStep') return '#8b5cf6'
+    return '#3b82f6'
   }, [])
 
   // ── Derive YAML ──────────────────────────────────────────────────────────
   const getYaml = useCallback(() => {
     const steps = flowToSteps(nodes, edges)
-    return stepsToYaml(pipelineName, validate, steps)
-  }, [nodes, edges, pipelineName, validate])
+    return stepsToYaml(pipelineName, steps)
+  }, [nodes, edges, pipelineName])
 
-  // ── Add step ──────────────────────────────────────────────────────────────
-  const addStep = useCallback(() => {
+  // ── Add script step ────────────────────────────────────────────────────────
+  const addScriptStep = useCallback(() => {
     const count = nodes.length
     const id   = `step-${Date.now()}`
     const data  = newStepData(count)
@@ -451,8 +448,8 @@ export default function PipelinePage() {
     const x = lastNode ? lastNode.position.x + 320 : 100
     const y = lastNode ? lastNode.position.y : 160
 
-    const newNode: PipelineNode = {
-      id, type: 'pipelineStep',
+    const newNode: AppNode = {
+      id, type: 'scriptStep',
       position: { x, y },
       data,
     }
@@ -464,7 +461,36 @@ export default function PipelinePage() {
         source: lastNode.id,
         target: id,
         type: 'smoothstep',
-        style: { stroke: stepColor(count), strokeWidth: 2 },
+        style: { stroke: '#3b82f6', strokeWidth: 2 },
+      }
+      setEdges(es => [...es, newEdge])
+    }
+    setSelectedId(id)
+  }, [nodes, setNodes, setEdges])
+
+  // ── Add skill step ──────────────────────────────────────────────────────────
+  const addSkillStep = useCallback(() => {
+    const count = nodes.length
+    const id   = `skill-${Date.now()}`
+    const data  = newSkillData(count)
+    const lastNode = [...nodes].sort((a, b) => b.position.x - a.position.x)[0]
+    const x = lastNode ? lastNode.position.x + 320 : 100
+    const y = lastNode ? lastNode.position.y : 160
+
+    const newNode: AppNode = {
+      id, type: 'skillStep',
+      position: { x, y },
+      data,
+    }
+    setNodes(ns => [...ns, newNode])
+
+    if (lastNode) {
+      const newEdge: Edge = {
+        id: `e-${lastNode.id}-${id}`,
+        source: lastNode.id,
+        target: id,
+        type: 'smoothstep',
+        style: { stroke: '#8b5cf6', strokeWidth: 2 },
       }
       setEdges(es => [...es, newEdge])
     }
@@ -475,7 +501,7 @@ export default function PipelinePage() {
   const addAiValidation = useCallback(() => {
     // 找到目標步驟節點（選中的或最後一個步驟）
     const targetId = selectedId
-      || [...nodes].filter(n => n.type !== 'aiValidation')
+      || [...nodes].filter(n => n.type === 'scriptStep' || n.type === 'skillStep')
           .sort((a, b) => b.position.x - a.position.x)[0]?.id
     if (!targetId) { toast.error('請先新增步驟'); return }
     const targetNode = nodes.find(n => n.id === targetId)
@@ -499,46 +525,41 @@ export default function PipelinePage() {
       // 插入：移除舊邊，新增兩條邊
       setEdges(es => [
         ...es.filter(e => e.id !== outEdge.id),
-        { id: `e-${targetId}-${id}`, source: targetId, target: id, type: 'smoothstep', style: { stroke: '#8b5cf6', strokeWidth: 2 } },
-        { id: `e-${id}-${outEdge.target}`, source: id, target: outEdge.target, type: 'smoothstep', style: { stroke: '#8b5cf6', strokeWidth: 2 } },
+        { id: `e-${targetId}-${id}`, source: targetId, target: id, type: 'smoothstep', style: { stroke: '#f59e0b', strokeWidth: 2 } },
+        { id: `e-${id}-${outEdge.target}`, source: id, target: outEdge.target, type: 'smoothstep', style: { stroke: '#f59e0b', strokeWidth: 2 } },
       ])
     } else {
       setEdges(es => [...es, {
         id: `e-${targetId}-${id}`, source: targetId, target: id,
-        type: 'smoothstep', style: { stroke: '#8b5cf6', strokeWidth: 2 },
+        type: 'smoothstep', style: { stroke: '#f59e0b', strokeWidth: 2 },
       }])
     }
     setSelectedId(id)
   }, [nodes, edges, selectedId, setNodes, setEdges])
 
-  // ── Delete step（AI 驗證節點刪除時自動重新連線）────────────────────────────
+  // ── Delete step（刪除任何節點時自動重新連線前後節點）──────────────────────────
   const deleteStep = useCallback((id: string) => {
-    const node = nodes.find(n => n.id === id)
-    if (node?.type === 'aiValidation') {
-      const inEdge  = edges.find(e => e.target === id)
-      const outEdge = edges.find(e => e.source === id)
-      setEdges(es => {
-        let filtered = es.filter(e => e.source !== id && e.target !== id)
-        if (inEdge && outEdge) {
-          filtered = [...filtered, {
-            id: `e-${inEdge.source}-${outEdge.target}`,
-            source: inEdge.source,
-            target: outEdge.target,
-            type: 'smoothstep',
-            style: { stroke: '#6366f1', strokeWidth: 2 },
-          }]
-        }
-        return filtered
-      })
-    } else {
-      setEdges(es => es.filter(e => e.source !== id && e.target !== id))
-    }
+    const inEdge  = edges.find(e => e.target === id)
+    const outEdge = edges.find(e => e.source === id)
+    setEdges(es => {
+      let filtered = es.filter(e => e.source !== id && e.target !== id)
+      if (inEdge && outEdge) {
+        filtered = [...filtered, {
+          id: `e-${inEdge.source}-${outEdge.target}`,
+          source: inEdge.source,
+          target: outEdge.target,
+          type: 'smoothstep',
+          style: { stroke: '#6366f1', strokeWidth: 2 },
+        }]
+      }
+      return filtered
+    })
     setNodes(ns => ns.filter(n => n.id !== id))
     setSelectedId(null)
   }, [nodes, edges, setNodes, setEdges])
 
-  // ── Update step data ──────────────────────────────────────────────────────
-  const updateStep = useCallback((id: string, patch: Partial<StepData>) => {
+  // ── Update step data (works for both scriptStep and skillStep) ─────────────
+  const updateStep = useCallback((id: string, patch: Partial<StepData> | Partial<SkillData>) => {
     setNodes(ns => ns.map(n =>
       n.id === id ? { ...n, data: { ...n.data, ...patch } } : n
     ))
@@ -567,7 +588,6 @@ export default function PipelinePage() {
     const parsed = parseYaml(yaml)
     if (!parsed) { toast.error('YAML 格式有誤'); return }
     setPipelineName(parsed.name)
-    setValidate(parsed.validate)
     const { nodes: ns, edges: es } = stepsToFlow(parsed.steps)
     // Preserve existing IDs if count matches
     setNodes(ns)
@@ -577,7 +597,7 @@ export default function PipelinePage() {
 
   // ── Run pipeline ──────────────────────────────────────────────────────────
   const handleRunClick = async () => {
-    const stepNodes = nodes.filter(n => n.type !== 'aiValidation')
+    const stepNodes = nodes.filter(n => n.type === 'scriptStep' || n.type === 'skillStep')
     if (stepNodes.length === 0) { toast.error('請先新增步驟'); return }
     const steps = flowToSteps(nodes, edges)
     const emptyStep = steps.find(s => !s.batch?.trim())
@@ -607,7 +627,9 @@ export default function PipelinePage() {
     setRunStatus('running')
     useRunStatusStore.getState().resetAll()
     try {
-      const res = await startPipeline(yaml, validate, useRecipe, activeId ?? undefined)
+      const steps = flowToSteps(nodes, edges)
+      const needsValidate = steps.some(s => s.skillMode || !!s.expect)
+      const res = await startPipeline(yaml, needsValidate, useRecipe, activeId ?? undefined)
       runIdRef.current = res.run_id
       toast.success(`Pipeline 已啟動（ID: ${res.run_id}）${useRecipe ? ' ⚡ 快速模式' : ''}`)
       pollStatus(res.run_id)
@@ -755,13 +777,6 @@ export default function PipelinePage() {
         {RunStatusIcon && <span>{RunStatusIcon}</span>}
         <div className="flex-1" />
 
-        {/* AI Validate toggle */}
-        <label className="flex items-center gap-1.5 cursor-pointer select-none">
-          <input type="checkbox" checked={validate} onChange={e => setValidate(e.target.checked)}
-            className="w-3.5 h-3.5 rounded accent-indigo-500" />
-          <span className="text-xs text-gray-500">AI 驗證</span>
-        </label>
-
         {/* YAML */}
         <button
           onClick={() => setShowYaml(!showYaml)}
@@ -802,7 +817,7 @@ export default function PipelinePage() {
         {/* Run */}
         <button
           onClick={handleRunClick}
-          disabled={running || nodes.filter(n => n.type !== 'aiValidation').length === 0}
+          disabled={running || nodes.filter(n => n.type === 'scriptStep' || n.type === 'skillStep').length === 0}
           className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors font-medium shadow-sm"
         >
           {running
@@ -841,20 +856,29 @@ export default function PipelinePage() {
             style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8 }}
           />
 
-          {/* Add Step / AI Validation buttons (top-left of canvas) */}
+          {/* Add node buttons (top-left of canvas) */}
           <Panel position="top-left">
             <div className="flex gap-2">
               <button
-                onClick={addStep}
-                className="flex items-center gap-1.5 px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm text-gray-600 hover:border-indigo-400 hover:text-indigo-600 shadow-sm transition-colors"
+                onClick={addScriptStep}
+                title="新增一個執行 Python 腳本/指令的步驟"
+                className="flex items-center gap-1.5 px-3 py-2 bg-white border border-blue-200 rounded-xl text-sm text-blue-600 hover:border-blue-400 hover:bg-blue-50 shadow-sm transition-colors"
               >
-                <Plus className="w-3.5 h-3.5" /> 新增步驟
+                <Plus className="w-3.5 h-3.5" /> Python腳本
               </button>
               <button
                 onClick={addAiValidation}
+                title="新增 AI 快速驗證節點"
+                className="flex items-center gap-1.5 px-3 py-2 bg-white border border-amber-200 rounded-xl text-sm text-amber-600 hover:border-amber-400 hover:bg-amber-50 shadow-sm transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" /> AI驗證
+              </button>
+              <button
+                onClick={addSkillStep}
+                title="新增 AI 自動化步驟（自動寫程式碼）"
                 className="flex items-center gap-1.5 px-3 py-2 bg-white border border-purple-200 rounded-xl text-sm text-purple-600 hover:border-purple-400 hover:bg-purple-50 shadow-sm transition-colors"
               >
-                <Sparkles className="w-3.5 h-3.5" /> AI 驗證
+                <Plus className="w-3.5 h-3.5" /> AI技能
               </button>
             </div>
           </Panel>
@@ -871,7 +895,7 @@ export default function PipelinePage() {
         )}
 
         {/* Empty state */}
-        {nodes.filter(n => n.type !== 'aiValidation').length === 0 && <EmptyState onAdd={addStep} />}
+        {nodes.filter(n => n.type === 'scriptStep' || n.type === 'skillStep').length === 0 && <EmptyState onAdd={addScriptStep} />}
 
         {/* Node config panel */}
         {selectedNode && selectedNode.type === 'aiValidation' ? (
@@ -881,14 +905,20 @@ export default function PipelinePage() {
             onClose={() => setSelectedId(null)}
             onDelete={() => deleteStep(selectedNode.id)}
           />
-        ) : selectedNode ? (
-          <NodeConfigPanel
-            node={selectedNode as PipelineNode}
+        ) : selectedNode && selectedNode.type === 'skillStep' ? (
+          <SkillConfigPanel
+            node={selectedNode as SkillNode}
+            onUpdate={patch => updateStep(selectedNode.id, patch as Partial<StepData>)}
+            onClose={() => setSelectedId(null)}
+            onDelete={() => deleteStep(selectedNode.id)}
+          />
+        ) : selectedNode && selectedNode.type === 'scriptStep' ? (
+          <ScriptConfigPanel
+            node={selectedNode as ScriptNode}
             onUpdate={patch => updateStep(selectedNode.id, patch)}
             onClose={() => setSelectedId(null)}
             onDelete={() => deleteStep(selectedNode.id)}
             aiExpectText={
-              // 查找此步驟後方是否有 AI 驗證節點
               (() => {
                 const outEdge = edges.find(e => e.source === selectedNode.id)
                 if (!outEdge) return undefined

@@ -10,8 +10,8 @@ interface Props {
 }
 
 export default function AiValidationPanel({ data, onUpdate, onClose, onDelete }: Props) {
-  const color = '#8b5cf6'
-  const inputCls = 'w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400/20 bg-white'
+  const color = '#f59e0b'
+  const inputCls = 'w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400/20 bg-white'
 
   return (
     <div className="absolute top-0 right-0 h-full w-[380px] bg-white shadow-2xl border-l border-gray-100 flex flex-col z-30 overflow-hidden">
@@ -20,9 +20,12 @@ export default function AiValidationPanel({ data, onUpdate, onClose, onDelete }:
           className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0"
           style={{ background: color }}
         >
-          ✦
+          ✓
         </span>
-        <span className="font-semibold text-gray-800 text-sm flex-1">AI 驗證節點</span>
+        <div className="flex-1 min-w-0">
+          <span className="font-semibold text-gray-800 text-sm block truncate">AI 驗證節點</span>
+          <span className="text-xs text-gray-400">LLM 快速檢查前一步的輸出是否符合預期（約 5 秒）</span>
+        </div>
         <button onClick={onDelete} title="刪除節點" className="text-gray-300 hover:text-red-400 transition-colors p-1">
           🗑
         </button>
@@ -55,42 +58,10 @@ export default function AiValidationPanel({ data, onUpdate, onClose, onDelete }:
           <p className="text-xs text-gray-400 mt-1">指定要驗證的輸出檔案路徑，留空則驗證前一步驟的標準輸出</p>
         </div>
 
-        <div>
-          <div className="flex items-center justify-between">
-            <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Skill 模式</label>
-            <button
-              type="button"
-              onClick={() => onUpdate({ skillMode: !data.skillMode })}
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                data.skillMode ? 'bg-purple-500' : 'bg-gray-300'
-              }`}
-            >
-              <span
-                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                  data.skillMode ? 'translate-x-[18px]' : 'translate-x-[3px]'
-                }`}
-              />
-            </button>
-          </div>
-          <p className="text-xs text-gray-400 mt-1.5">
-            {data.skillMode
-              ? '🔬 已啟用：AI 會主動執行 Python / Shell 來驗證輸出'
-              : '啟用後 AI 可主動寫程式碼驗證，而非僅閱讀文字判斷'}
-          </p>
-          {data.skillMode && (
-            <div className="mt-2 p-2 rounded-lg bg-purple-50 border border-purple-200">
-              <p className="text-xs text-purple-700 leading-relaxed">
-                <span className="font-semibold">Skill 工具：</span>
-                run_python · run_shell · read_file
-              </p>
-              <p className="text-xs text-purple-500 mt-1">AI 會根據驗證描述自動撰寫並執行驗證程式碼</p>
-            </div>
-          )}
-        </div>
       </div>
 
-      <div className="p-4 border-t bg-purple-50">
-        <p className="text-xs text-purple-600">此節點的描述會自動寫入前一步驟的 AI 驗證欄位</p>
+      <div className="p-4 border-t bg-amber-50">
+        <p className="text-xs text-amber-600">此節點的描述會自動寫入前一步驟的 AI 驗證欄位</p>
       </div>
     </div>
   )

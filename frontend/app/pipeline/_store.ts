@@ -16,11 +16,40 @@ export interface Workflow {
   updatedAt: number
 }
 
+/** 遷移舊節點類型：pipelineStep → scriptStep / skillStep */
+function migrateNodes(nodes: AppNode[]): AppNode[] {
+  return nodes.map(n => {
+    if (n.type === 'pipelineStep') {
+      const d = n.data as Record<string, any>
+      if (d.skillMode) {
+        return {
+          ...n,
+          type: 'skillStep' as const,
+          data: {
+            name: d.name ?? '',
+            taskDescription: d.batch ?? '',
+            workingDir: d.workingDir ?? '',
+            outputPath: d.outputPath ?? '',
+            expectedOutput: d.expect ?? '',
+            timeout: d.timeout ?? 300,
+            retry: d.retry ?? 0,
+            index: d.index ?? 0,
+            status: 'idle' as const,
+            errorMsg: '',
+          },
+        }
+      }
+      return { ...n, type: 'scriptStep' as const }
+    }
+    return n
+  })
+}
+
 function apiToWorkflow(d: WorkflowData): Workflow {
   return {
     id: d.id,
     name: d.name,
-    nodes: (d.canvas?.nodes ?? []) as AppNode[],
+    nodes: migrateNodes((d.canvas?.nodes ?? []) as AppNode[]),
     edges: (d.canvas?.edges ?? []) as Edge[],
     validate: d.validate,
     updatedAt: d.updated_at * 1000,  // backend uses seconds, frontend uses ms
