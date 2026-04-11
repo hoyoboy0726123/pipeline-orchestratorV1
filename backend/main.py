@@ -64,6 +64,11 @@ _GROQ_MODEL_PRESETS = [
     {"id": "openai/gpt-oss-20b", "label": "GPT-OSS 20B"},
 ]
 
+# Gemini 固定模型（使用者指定）
+_GEMINI_MODEL_PRESETS = [
+    {"id": "gemma-4-31b-it", "label": "Gemma 4 31B IT（固定）"},
+]
+
 
 @app.get("/settings/model")
 async def get_model_settings():
@@ -123,6 +128,7 @@ async def get_available_models():
 
     return {
         "groq": _GROQ_MODEL_PRESETS,
+        "gemini": _GEMINI_MODEL_PRESETS,
         "ollama": ollama_models,
         "ollama_base_url": base_url,
         "ollama_error": ollama_error,
@@ -602,33 +608,54 @@ async def delete_pipeline_schedule(task_id: str):
 # ── Pipeline YAML Chat Assistant ─────────────────────────────
 _PIPELINE_SYSTEM = """你是 Pipeline YAML 設定助手。使用者會用自然語言描述他想自動化的工作流程。
 
-你的任務：
-1. 如果資訊不足，**用繁體中文反問**，一次只問一個最重要的問題
-2. 收集到足夠資訊後（步驟名稱、執行命令/路徑、預期輸出），**輸出完整 YAML**
+## 兩種步驟類型（最重要）
 
-當你認為資訊足夠時，回覆格式如下（必須包含 YAML_READY 標記）：
+本系統支援兩種節點：
+1. **腳本節點（script）**：使用者已經有寫好的腳本/指令 → `batch` 填路徑或指令
+2. **技能節點（skill）**：使用者沒有腳本，想請 AI 自動撰寫程式碼執行 → `batch` 填**自然語言任務描述**，並加 `skill_mode: true`
+
+**判斷原則**：
+- 若使用者提到「抓取某網站」「生成某檔案」「處理資料」但**沒提到現成腳本路徑** → 直接用 **skill 節點**，不要問腳本路徑！
+- 若使用者明確說「我有一個腳本在 xxx」或「跑我寫好的 yyy.py」 → 用 **script 節點**
+- 不確定就用 **skill 節點**（AI 會自己寫程式碼）
+
+## 你的任務
+
+1. 資訊不足時用繁體中文反問，一次只問最重要的一個問題
+   - 對 skill 節點，只需問：任務目標、輸出檔案路徑（可選）、有無特殊要求
+   - **不要問使用者腳本路徑**除非他明確表示已有腳本
+2. 收集足夠資訊後輸出完整 YAML（必須包含 `YAML_READY` 標記）
+
+## 回覆格式
+
 好的，我已經整理好 Pipeline 設定：
 
 YAML_READY
 ```yaml
 pipeline:
-  name: xxx
+  name: yahoo_news_to_excel
   steps:
-    - name: 步驟名稱
-      batch: /path/to/script.sh
-      timeout: 300
-      retry: 1
+    - name: 抓取並匯出Excel
+      skill_mode: true
+      batch: |
+        到 Yahoo 新聞首頁抓取 10 則頭條新聞，
+        擷取每則的標題、內容摘要、來源網址，
+        製作成 Excel 檔案，欄位依序為：標題、摘要、來源網址。
+      timeout: 600
+      retry: 2
       output:
-        path: /path/to/output.csv
-        expect: "描述正確輸出的樣子"
+        path: /Users/hadytang/ai_output/yahoo_news.xlsx
+        expect: "Excel 檔案含 10 列新聞，三欄：標題、摘要、來源網址"
 ```
 
-YAML 規則：
-- batch：Shell 命令或腳本路徑（Mac/Linux 用 .sh）
-- timeout：秒數，不確定就預設 300
-- retry：失敗自動重試次數，建議 1-3
-- output.path：預期產出的檔案路徑（沒有輸出檔案可省略 output 欄位）
-- output.expect：自然語言描述「正確輸出長什麼樣子」，AI 驗證用"""
+## YAML 欄位規則
+
+- **skill_mode: true** → `batch` 為自然語言任務描述（多行用 `|`），AI 會自動寫 Python 程式碼
+- **skill_mode 省略或 false** → `batch` 為 shell 指令或腳本路徑
+- `timeout`：秒數，skill 節點建議 600，script 節點建議 300
+- `retry`：失敗自動重試次數，建議 1-3
+- `output.path`：預期產出的檔案絕對路徑（沒有就省略整個 `output`）
+- `output.expect`：自然語言描述「正確輸出長什麼樣子」，供 AI 驗證"""
 
 
 class PipelineChatRequest(BaseModel):
@@ -648,7 +675,19 @@ async def pipeline_chat(req: PipelineChatRequest):
         lc_messages.append(cls(content=m["content"]))
 
     response = llm.invoke(lc_messages)
-    content = response.content
+    raw = response.content
+    # Gemini/Gemma 可能回傳 list of content blocks（含 thinking + text）→ 抽出 text
+    if isinstance(raw, list):
+        parts = []
+        for block in raw:
+            if isinstance(block, dict):
+                if block.get("type") == "text" and block.get("text"):
+                    parts.append(block["text"])
+            elif isinstance(block, str):
+                parts.append(block)
+        content = "".join(parts)
+    else:
+        content = str(raw) if raw is not None else ""
     has_yaml = "YAML_READY" in content
     yaml_content = None
     if has_yaml:

@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Any, Optional
 
-from config import GROQ_API_KEY
+from config import GROQ_API_KEY, GEMINI_API_KEY
 from settings import get_settings
 
 
@@ -17,6 +17,14 @@ def build_llm(temperature: float = 0.0) -> Any:
     if provider == "groq":
         from langchain_groq import ChatGroq
         return ChatGroq(api_key=GROQ_API_KEY, model=model, temperature=temperature)
+
+    if provider == "gemini":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model=model,
+            google_api_key=GEMINI_API_KEY,
+            temperature=temperature,
+        )
 
     if provider == "ollama":
         from langchain_ollama import ChatOllama

@@ -52,7 +52,7 @@ def update_settings(
 ) -> dict:
     """更新並寫入磁碟。"""
     global _cache
-    if provider not in ("groq", "ollama"):
+    if provider not in ("groq", "ollama", "gemini"):
         raise ValueError(f"unsupported provider: {provider}")
     if not model or not isinstance(model, str):
         raise ValueError("model is required")

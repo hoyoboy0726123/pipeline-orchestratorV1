@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Settings as SettingsIcon, Save, RefreshCw, AlertCircle, CheckCircle2, Cloud, HardDrive, ArrowLeft, Brain, Package, Plus, Trash2, Loader2 } from 'lucide-react'
+import { Settings as SettingsIcon, Save, RefreshCw, AlertCircle, CheckCircle2, Cloud, HardDrive, ArrowLeft, Brain, Package, Plus, Trash2, Loader2, Sparkles } from 'lucide-react'
 import Link from 'next/link'
 import { toast, Toaster } from 'sonner'
 import {
@@ -158,7 +158,7 @@ function SkillPackagesSection() {
 export default function SettingsPage() {
   const [current, setCurrent] = useState<ModelSettings | null>(null)
   const [available, setAvailable] = useState<AvailableModels | null>(null)
-  const [provider, setProvider] = useState<'groq' | 'ollama'>('groq')
+  const [provider, setProvider] = useState<'groq' | 'ollama' | 'gemini'>('groq')
   const [model, setModel] = useState('')
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434')
   const [thinking, setThinking] = useState<'auto' | 'on' | 'off'>('off')
@@ -203,7 +203,11 @@ export default function SettingsPage() {
     }
   }
 
-  const options = provider === 'groq' ? (available?.groq ?? []) : (available?.ollama ?? [])
+  const options = provider === 'groq'
+    ? (available?.groq ?? [])
+    : provider === 'gemini'
+    ? (available?.gemini ?? [])
+    : (available?.ollama ?? [])
   const dirty = current && (
     provider !== current.provider ||
     model !== current.model ||
@@ -242,17 +246,22 @@ export default function SettingsPage() {
         ) : (
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
             {/* Current */}
-            <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
-              <div className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">目前使用</div>
-              <div className="font-mono text-sm text-gray-900">
-                {current?.provider} / {current?.model}
+            <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-brand-50 to-purple-50">
+              <div className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">目前使用的模型</div>
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded text-xs font-semibold uppercase bg-white border border-gray-200 text-gray-700">
+                  {current?.provider}
+                </span>
+                <span className="font-mono text-sm font-medium text-gray-900">
+                  {current?.model}
+                </span>
               </div>
             </div>
 
             {/* Provider 選擇 */}
             <div className="p-6 border-b border-gray-100">
               <label className="block text-sm font-medium text-gray-700 mb-3">提供者</label>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <button
                   onClick={() => { setProvider('groq'); setModel(available?.groq?.[0]?.id ?? '') }}
                   className={cn(
@@ -262,10 +271,25 @@ export default function SettingsPage() {
                       : 'border-gray-200 hover:border-gray-300'
                   )}
                 >
-                  <Cloud className={cn('w-5 h-5', provider === 'groq' ? 'text-brand-700' : 'text-gray-400')} />
-                  <div>
+                  <Cloud className={cn('w-5 h-5 shrink-0', provider === 'groq' ? 'text-brand-700' : 'text-gray-400')} />
+                  <div className="min-w-0">
                     <div className="font-medium text-sm text-gray-900">Groq Cloud</div>
                     <div className="text-xs text-gray-500">雲端 API，速度快</div>
+                  </div>
+                </button>
+                <button
+                  onClick={() => { setProvider('gemini'); setModel(available?.gemini?.[0]?.id ?? 'gemma-4-31b-it') }}
+                  className={cn(
+                    'flex items-center gap-3 p-4 rounded-lg border-2 transition-all text-left',
+                    provider === 'gemini'
+                      ? 'border-brand-600 bg-brand-50'
+                      : 'border-gray-200 hover:border-gray-300'
+                  )}
+                >
+                  <Sparkles className={cn('w-5 h-5 shrink-0', provider === 'gemini' ? 'text-brand-700' : 'text-gray-400')} />
+                  <div className="min-w-0">
+                    <div className="font-medium text-sm text-gray-900">Google Gemini</div>
+                    <div className="text-xs text-gray-500">固定 gemma-4-31b-it</div>
                   </div>
                 </button>
                 <button
@@ -277,8 +301,8 @@ export default function SettingsPage() {
                       : 'border-gray-200 hover:border-gray-300'
                   )}
                 >
-                  <HardDrive className={cn('w-5 h-5', provider === 'ollama' ? 'text-brand-700' : 'text-gray-400')} />
-                  <div>
+                  <HardDrive className={cn('w-5 h-5 shrink-0', provider === 'ollama' ? 'text-brand-700' : 'text-gray-400')} />
+                  <div className="min-w-0">
                     <div className="font-medium text-sm text-gray-900">Ollama 本地</div>
                     <div className="text-xs text-gray-500">離線運行，無配額</div>
                   </div>

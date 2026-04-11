@@ -422,17 +422,17 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
                       <Bot className="w-3 h-3 text-indigo-600" />
                     </div>
                   )}
-                  <div className={`max-w-[88%] rounded-xl px-2.5 py-1.5 text-xs leading-relaxed ${
+                  <div className={`max-w-[88%] min-w-0 rounded-xl px-2.5 py-1.5 text-xs leading-relaxed break-words overflow-hidden ${
                     msg.role === 'user'
                       ? 'bg-indigo-600 text-white rounded-br-sm'
                       : 'bg-gray-100 text-gray-700 rounded-bl-sm'
-                  }`}>
+                  }`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
                     {msg.role === 'assistant' ? (
-                      <div className="prose prose-xs max-w-none prose-p:my-0.5 prose-pre:text-xs">
+                      <div className="prose prose-xs max-w-none prose-p:my-0.5 prose-pre:text-xs prose-pre:whitespace-pre-wrap prose-code:break-all">
                         <ReactMarkdown>{msg.content.replace(/YAML_READY\n```yaml[\s\S]*?```/g, '（已偵測到 YAML ↓）')}</ReactMarkdown>
                       </div>
                     ) : (
-                      msg.content
+                      <span className="whitespace-pre-wrap">{msg.content}</span>
                     )}
                     {msg.hasYaml && msg.yaml && (
                       <button

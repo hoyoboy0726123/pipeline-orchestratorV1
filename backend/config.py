@@ -6,6 +6,8 @@ load_dotenv()
 
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL_MAIN = os.getenv("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "REMOVED_KEY")
+GEMINI_MODEL_MAIN = os.getenv("GEMINI_MODEL", "gemma-4-31b-it")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 TIMEZONE           = os.getenv("TIMEZONE", "Asia/Taipei")
