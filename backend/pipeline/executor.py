@@ -78,10 +78,23 @@ _SKILL_REQUIRED_PKGS = _load_skill_required_pkgs()
 def _detect_python_interpreter() -> str:
     """
     跨平台偵測最適合 Skill 模式的 Python 直譯器：
-    1. 優先使用環境變數 SKILL_PYTHON 指定的路徑
-    2. 依序探測常見 Python 位置，挑第一個裝有 matplotlib/pandas/openpyxl 的
-    3. 若都沒有，fallback 到當前 python
+    1. 優先鎖定專案目錄下的 .venv (確保 AI 能看到 UI 安裝的套件)
+    2. 其次使用環境變數 SKILL_PYTHON 指定的路徑
+    3.Fallback 到系統路徑或其他位置
     """
+    import sys
+    from pathlib import Path
+    
+    # 強制優先檢查專案內的 .venv (backend/.venv)
+    proj_venv = Path(__file__).parent.parent / ".venv"
+    if os.name == "nt":
+        venv_exe = proj_venv / "Scripts" / "python.exe"
+    else:
+        venv_exe = proj_venv / "bin" / "python"
+        
+    if venv_exe.exists():
+        return str(venv_exe.absolute())
+
     override = os.getenv("SKILL_PYTHON")
     if override and Path(override).exists():
         return override
@@ -732,12 +745,9 @@ async def execute_step_with_skill(
 
 【可用 Python 套件】
 標準庫：csv, json, random, os, pathlib, re, math, datetime, io, collections, itertools, functools, glob, shutil, hashlib, urllib
-資料處理：pandas, numpy, openpyxl, xlrd, tabulate
-文件處理：python-docx (docx), python-pptx (pptx), PyPDF2, reportlab, jinja2
-網頁/爬蟲：requests, beautifulsoup4 (bs4), lxml
-圖表繪製：matplotlib, seaborn, plotly
-圖片處理：Pillow (PIL)
-其他：faker, pyyaml, chardet
+已安裝的第三方套件：{installed_packages}
+
+以上套件可直接 import 使用。如果任務需要其他未列出的套件，也可以直接 import，系統會自動偵測並提示用戶安裝。
 
 【matplotlib 繪圖注意事項】
 - 使用 matplotlib.pyplot 時，務必在最前面加 `import matplotlib; matplotlib.use('Agg')` 以避免 GUI 問題
@@ -812,6 +822,15 @@ async def execute_step_with_skill(
             if po.get("schema"):
                 lines.append(f"  欄位/結構：{po['schema']}")
         prev_hint = "\n".join(lines)
+
+    # ── 動態注入已安裝的第三方套件清單 ──
+    pkg_file = Path(__file__).parent.parent / "skill_packages.txt"
+    if pkg_file.exists():
+        pkg_lines = [l.strip() for l in pkg_file.read_text(encoding="utf-8").splitlines()
+                     if l.strip() and not l.strip().startswith("#")]
+        system_prompt = system_prompt.replace("{installed_packages}", ", ".join(pkg_lines))
+    else:
+        system_prompt = system_prompt.replace("{installed_packages}", "pandas, openpyxl, matplotlib, requests, beautifulsoup4, Pillow, python-docx")
 
     user_prompt = f"""請完成以下任務：
 

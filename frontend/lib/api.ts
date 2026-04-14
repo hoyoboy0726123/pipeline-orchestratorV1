@@ -216,6 +216,13 @@ export async function getPipelineScheduled(): Promise<ScheduledTask[]> {
   return data.tasks ?? []
 }
 
+export async function cancelPipelineSchedule(name: string): Promise<void> {
+  const res = await fetch(`${BASE}/pipeline/scheduled/cancel-by-name/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error('取消排程失敗')
+}
+
 export async function createPipelineSchedule(req: {
   name: string
   yaml_content: string

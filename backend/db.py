@@ -158,15 +158,24 @@ def _migrate_old_recipes(conn: sqlite3.Connection):
 
 def create_workflow(name: str = "新工作流", canvas: dict = None, validate: bool = False) -> dict:
     conn = get_conn()
+    
+    # ── 自動避重名邏輯 ──
+    existing_names = {row[0] for row in conn.execute("SELECT name FROM workflows").fetchall()}
+    final_name = name
+    counter = 1
+    while final_name in existing_names:
+        final_name = f"{name}({counter})"
+        counter += 1
+    
     wf_id = f"wf-{uuid.uuid4().hex[:12]}"
     now = time.time()
     canvas_json = json.dumps(canvas or {"nodes": [], "edges": []}, ensure_ascii=False)
     conn.execute(
         "INSERT INTO workflows (id, name, yaml, canvas, validate, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-        (wf_id, name, "", canvas_json, 1 if validate else 0, now, now),
+        (wf_id, final_name, "", canvas_json, 1 if validate else 0, now, now),
     )
     conn.commit()
-    return {"id": wf_id, "name": name, "canvas": canvas or {"nodes": [], "edges": []},
+    return {"id": wf_id, "name": final_name, "canvas": canvas or {"nodes": [], "edges": []},
             "validate": validate, "created_at": now, "updated_at": now}
 
 

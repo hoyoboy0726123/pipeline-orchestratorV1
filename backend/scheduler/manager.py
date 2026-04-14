@@ -169,6 +169,21 @@ def remove_task(task_id: str) -> bool:
         return False
 
 
+def remove_task_by_name(name: str) -> bool:
+    """透過名稱刪除任務（畫布端常用）"""
+    scheduler = get_scheduler()
+    found = False
+    for job in scheduler.get_jobs():
+        if job.name == name:
+            try:
+                scheduler.remove_job(job.id)
+                _task_meta.pop(job.id, None)
+                found = True
+            except Exception:
+                pass
+    return found
+
+
 def list_tasks() -> list[dict]:
     """列出所有任務"""
     scheduler = get_scheduler()
@@ -180,7 +195,11 @@ def list_tasks() -> list[dict]:
             schedule_type="cron", schedule_expr="",
             next_run=None, last_run=None, enabled=True,
         ))
-        meta.next_run = job.next_run_time.isoformat() if job.next_run_time else None
+        # 確保回傳帶有時區資訊的 ISO 字串
+        if job.next_run_time:
+            meta.next_run = job.next_run_time.isoformat()
+        else:
+            meta.next_run = None
         result.append(asdict(meta))
     return result
 

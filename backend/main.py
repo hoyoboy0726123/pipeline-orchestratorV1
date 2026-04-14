@@ -661,6 +661,15 @@ async def list_pipeline_scheduled():
     return {"tasks": [t for t in tasks if t.get("output_format") == "pipeline"]}
 
 
+@app.delete("/pipeline/scheduled/cancel-by-name/{name}")
+async def cancel_pipeline_schedule(name: str):
+    from scheduler.manager import remove_task_by_name
+    success = remove_task_by_name(name)
+    if not success:
+        raise HTTPException(status_code=404, detail="找不到該名稱的排程任務")
+    return {"status": "ok"}
+
+
 class PipelineScheduleRequest(BaseModel):
     name: str
     yaml_content: str

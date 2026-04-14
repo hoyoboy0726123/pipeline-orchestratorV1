@@ -3,13 +3,16 @@ import { useState, useRef, useEffect } from 'react'
 import {
   Plus, Workflow, X, Bot, ChevronUp, ChevronDown,
   Send, Loader2, Pencil, Check, Trash2, Settings, BookOpen,
-  Download, Upload,
+  Download, Upload, Square,
 } from 'lucide-react'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import ReactMarkdown from 'react-markdown'
 import { useWorkflowStore } from './_store'
-import { pipelineChat, createWorkflowApi, exportWorkflowUrl, importWorkflow, getPipelineScheduled, getPipelineRuns } from '@/lib/api'
+import { 
+  pipelineChat, createWorkflowApi, exportWorkflowUrl, importWorkflow, 
+  getPipelineScheduled, getPipelineRuns, cancelPipelineSchedule 
+} from '@/lib/api'
 import type { ScheduledTask } from '@/lib/types'
 
 // ── AI Chat Message Type ─────────────────────────────────────────────────────
@@ -26,12 +29,30 @@ function useCountdown(nextRun: string | null) {
   useEffect(() => {
     if (!nextRun) { setText(''); return }
     const calc = () => {
-      const diff = new Date(nextRun).getTime() - Date.now()
-      if (diff <= 0) { setText('即將執行…'); return }
+      // 解析日期並檢查有效性
+      const targetDate = new Date(nextRun)
+      const now = new Date()
+      
+      if (isNaN(targetDate.getTime())) { 
+        setText('')
+        return 
+      }
+      
+      let diff = targetDate.getTime() - now.getTime()
+      
+      // 如果 diff 為負但絕對值很小（10秒內），視為即將執行
+      if (diff <= 0) {
+        if (diff > -10000) setText('即將執行…')
+        else setText('') 
+        return
+      }
+      
       const h = Math.floor(diff / 3600000)
       const m = Math.floor((diff % 3600000) / 60000)
       const s = Math.floor((diff % 60000) / 1000)
-      if (h > 0) setText(`${h}時${m}分後執行`)
+      
+      if (h > 24) setText('1天以上')
+      else if (h > 0) setText(`${h}時${m}分後執行`)
       else if (m > 0) setText(`${m}分${s}秒後執行`)
       else setText(`${s}秒後執行`)
     }
@@ -105,10 +126,30 @@ function WorkflowItem({
         ) : runStatus === 'failed' ? (
           <p className="text-xs text-red-500 font-medium mt-0.5">執行失敗</p>
         ) : countdown ? (
-          <p className="text-xs text-amber-500 font-medium mt-0.5 flex items-center gap-1">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            {countdown}
-          </p>
+          <div className="flex items-center gap-2 mt-0.5">
+            <p className="text-xs text-amber-500 font-medium flex items-center gap-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              {countdown}
+            </p>
+            <button
+              onClick={async (e) => {
+                e.stopPropagation()
+                if (confirm(`確定取消「${name}」的排程執行？`)) {
+                  try {
+                    await cancelPipelineSchedule(name)
+                    toast.success('排程已取消')
+                    // 這裡依賴 Sidebar 的 fetchSchedules 每 15 秒同步一次
+                  } catch (err) {
+                    toast.error('取消失敗')
+                  }
+                }
+              }}
+              className="p-0.5 rounded hover:bg-amber-100 text-amber-600 transition-colors"
+              title="取消排程"
+            >
+              <Square className="w-2.5 h-2.5 fill-current" />
+            </button>
+          </div>
         ) : (
           <p className="text-xs text-gray-400 mt-0.5">{relTime}</p>
         )}
