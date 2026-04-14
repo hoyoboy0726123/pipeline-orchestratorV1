@@ -62,6 +62,14 @@ cd pipeline-orchestratorV1
 
 ### 2. 設定環境變數
 
+複製範本並編輯：
+
+**Windows (CMD)：**
+```cmd
+copy backend\.env.example backend\.env
+```
+
+**Windows (PowerShell) / macOS / Linux：**
 ```bash
 cp backend/.env.example backend/.env
 ```
@@ -92,13 +100,20 @@ PIPELINE_DIR=~/pipelines
 <details>
 <summary><b>方法 A：使用 uv（推薦，速度快）</b></summary>
 
+**安裝 uv（如果尚未安裝）：**
+
+```bash
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+**建立虛擬環境並安裝依賴：**
+
 ```bash
 cd backend
-
-# 安裝 uv（如果尚未安裝）
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 建立虛擬環境並安裝依賴
 uv venv .venv
 uv pip install -r requirements.txt
 ```
@@ -110,10 +125,25 @@ uv pip install -r requirements.txt
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
+python -m venv .venv
+
+# Windows (CMD)
+.venv\Scripts\activate
+
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+
+# macOS / Linux
+source .venv/bin/activate
+
+# 安裝依賴
 pip install -r requirements.txt
 ```
+
+> **Windows PowerShell 注意事項：** 若出現「無法執行指令碼」的錯誤，請先執行：
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
 
 </details>
 
@@ -126,7 +156,7 @@ npm install
 
 ### 5. 啟動服務
 
-#### 一鍵啟動（推薦）
+#### 一鍵啟動（macOS / Linux）
 
 ```bash
 # 回到專案根目錄
@@ -136,12 +166,20 @@ chmod +x start.sh
 
 腳本會自動偵測是否安裝了 `uv`，優先使用 uv 建立虛擬環境。
 
-#### 手動啟動
+#### 手動啟動（Windows / macOS / Linux）
+
+開啟兩個終端機視窗：
 
 **終端機 1 — 後端：**
 ```bash
 cd backend
-source .venv/bin/activate
+
+# 啟用虛擬環境（擇一）
+.venv\Scripts\activate          # Windows CMD
+.venv\Scripts\Activate.ps1      # Windows PowerShell
+source .venv/bin/activate       # macOS / Linux
+
+# 啟動後端
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
