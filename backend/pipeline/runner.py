@@ -637,18 +637,18 @@ async def resume_pipeline(run_id: str, decision: str, hint: str = "") -> str:
     config = PipelineConfig.from_dict(run.config_dict)
     step_num = run.current_step + 1
     total = len(config.steps)
+    # 確保 logger 有 file handler（resume 時 run_pipeline 的 task 可能已結束）
+    logger, _ = create_run_logger(run.run_id, run.pipeline_name)
 
     if decision == "abort":
         run.status = "aborted"
         run.ended_at = datetime.now().isoformat()
         store.save(run)
-        logger = logging.getLogger(f"pipeline.{run_id}")
         logger.info("用戶選擇中止 Pipeline")
         await _notify_final(run, config)
         return f"🛑 Pipeline 已中止（步驟 {step_num}/{total}）"
 
     elif decision == "skip":
-        logger = logging.getLogger(f"pipeline.{run_id}")
         logger.info(f"用戶選擇跳過步驟 {step_num}")
         next_step = run.current_step + 1
 
@@ -669,7 +669,6 @@ async def resume_pipeline(run_id: str, decision: str, hint: str = "") -> str:
         return f"⏩ 跳過步驟 {step_num}，繼續執行步驟 {step_num + 1}/{total}"
 
     elif decision == "retry":
-        logger = logging.getLogger(f"pipeline.{run_id}")
         logger.info(f"用戶選擇重試步驟 {step_num}")
         t = asyncio.create_task(run_pipeline(
             config_dict=run.config_dict,
@@ -681,7 +680,6 @@ async def resume_pipeline(run_id: str, decision: str, hint: str = "") -> str:
         return f"🔄 重試步驟 {step_num}/{total}"
 
     elif decision == "retry_with_hint":
-        logger = logging.getLogger(f"pipeline.{run_id}")
         config_d = run.config_dict.copy()
         steps = config_d.get("steps", [])
 
@@ -727,7 +725,6 @@ async def resume_pipeline(run_id: str, decision: str, hint: str = "") -> str:
 
     elif decision == "continue":
         # 人工確認通過 → 繼續下一步
-        logger = logging.getLogger(f"pipeline.{run_id}")
         logger.info(f"用戶確認通過步驟 {step_num}，繼續執行")
 
         # 更新確認步驟結果
@@ -743,6 +740,7 @@ async def resume_pipeline(run_id: str, decision: str, hint: str = "") -> str:
             run.status = "completed"
             run.ended_at = datetime.now().isoformat()
             store.save(run)
+            logger.info(f"Pipeline {run.pipeline_name} 全部完成！")
             await _notify_final(run, config)
             return f"✅ 確認通過，Pipeline 全部完成"
 

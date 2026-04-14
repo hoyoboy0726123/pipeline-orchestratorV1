@@ -3,11 +3,12 @@ __pycache__/
 *.py[cod]
 *.pyo
 .venv/
+.venv.*/
 *.egg-info/
 dist/
 build/
 
-# Environment
+# Environment / Secrets
 .env
 *.env.local
 
@@ -17,11 +18,14 @@ node_modules/
 out/
 *.tsbuildinfo
 
-# DB / logs
+# DB / logs / runtime data
 *.db
 *.sqlite
 *.log
 nohup.out
+
+# Test output files
+test-workflows/*.xlsx
 
 # macOS
 .DS_Store

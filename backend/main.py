@@ -1,6 +1,6 @@
 """
 Pipeline Orchestrator — 獨立後端
-啟動：uvicorn main:app --host 0.0.0.0 --port 8002
+啟動：uvicorn main:app --host 0.0.0.0 --port 8000
 """
 import asyncio
 import json

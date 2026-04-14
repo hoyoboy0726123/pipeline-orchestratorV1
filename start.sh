@@ -8,22 +8,30 @@ FRONTEND="$ROOT/frontend"
 
 echo "🚀 啟動 Pipeline Orchestrator..."
 
-# 後端
-echo "▶ 啟動後端 (port 8002)..."
+# ── 後端 ─────────────────────────────────────────────────────────
+echo "▶ 啟動後端 (port 8000)..."
 cd "$BACKEND"
+
 if [ ! -d ".venv" ]; then
   echo "  建立虛擬環境..."
-  python3 -m venv .venv
-  .venv/bin/pip install -q -r requirements.txt
+  if command -v uv &> /dev/null; then
+    echo "  (使用 uv)"
+    uv venv .venv
+    uv pip install -r requirements.txt
+  else
+    python3 -m venv .venv
+    .venv/bin/pip install -q -r requirements.txt
+  fi
 fi
-.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8002 &
+
+.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 echo "  後端 PID: $BACKEND_PID"
 
 # 等後端就緒
 sleep 2
 
-# 前端
+# ── 前端 ─────────────────────────────────────────────────────────
 echo "▶ 啟動前端 (port 3002)..."
 cd "$FRONTEND"
 if [ ! -d "node_modules" ]; then
@@ -37,7 +45,7 @@ echo "  前端 PID: $FRONTEND_PID"
 echo ""
 echo "✅ Pipeline Orchestrator 已啟動"
 echo "   前端：http://localhost:3002"
-echo "   後端：http://localhost:8002"
+echo "   後端：http://localhost:8000"
 echo ""
 echo "按 Ctrl+C 停止所有服務"
 

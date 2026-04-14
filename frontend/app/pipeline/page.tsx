@@ -752,7 +752,7 @@ export default function PipelinePage() {
         return
       }
       // 如果之前在 awaiting，現在狀態改變了（Telegram 確認了）→ 重新同步
-      if (runStatusRef.current === 'awaiting' && data.status !== 'awaiting_human') {
+      if (runStatusRef.current === 'awaiting') {
         setRunStatus(data.status === 'running' ? 'running' : 'idle')
         setRunning(data.status === 'running')
         setAwaitingRunId(null)
@@ -822,14 +822,16 @@ export default function PipelinePage() {
         setHintText('')
         return
       }
-      await resumePipeline(awaitingRunId, decision, hint)
+      const rid = awaitingRunId
+      await resumePipeline(rid, decision, hint)
       setRunStatus('running')
       setRunning(true)
       setAwaitingRunId(null)
       toast.dismiss('awaiting')
       setShowHintInput(false)
       setHintText('')
-      // polling 已在持續中（awaiting 不停止 interval），無需重建
+      // 立即觸發一次 poll，捕捉「最後一步是人工確認 → 直接完成」的情境
+      setTimeout(() => pollStatus(rid), 500)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '操作失敗')
     }
