@@ -29,15 +29,17 @@ def create_run_logger(run_id: str, pipeline_name: str) -> tuple[logging.Logger, 
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
 
-    # 避免重複新增 handler（run 恢復時再次呼叫）
-    if not any(isinstance(h, logging.FileHandler) and h.baseFilename == str(log_path)
-               for h in logger.handlers):
-        fh = logging.FileHandler(str(log_path), encoding="utf-8")
-        fh.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)-8s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        ))
-        logger.addHandler(fh)
+    # 徹底清除舊的 handlers，避免在 Windows spawn 模式或恢復執行時重複輸出
+    if logger.handlers:
+        for h in logger.handlers[:]:
+            logger.removeHandler(h)
+
+    fh = logging.FileHandler(str(log_path), encoding="utf-8")
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)-8s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    logger.addHandler(fh)
 
     return logger, str(log_path)
 

@@ -15,11 +15,41 @@
 """
 import os
 import sys
-
 import pandas as pd
+from dotenv import load_dotenv
+from pathlib import Path
 
-INPUT  = os.path.expanduser("~/ai_output/finance/raw_transactions.xlsx")
-OUTPUT = os.path.expanduser("~/ai_output/finance/cleaned_transactions.xlsx")
+# 載入 .env 設定
+load_dotenv(Path(__file__).parent.parent.parent / "backend" / ".env")
+
+# ── 路徑設定 ────────────────────────────────────────────────────────────────
+def get_paths():
+    # 1. 優先使用主程式動態注入的路徑 (包含工作流名稱)
+    env_run_dir = os.getenv("PIPELINE_OUTPUT_DIR")
+    if env_run_dir:
+        return (
+            os.path.join(env_run_dir, "raw_transactions.xlsx"),
+            os.path.join(env_run_dir, "cleaned_transactions.xlsx")
+        )
+
+    # 2. 次優先從環境變數讀取全局輸出根目錄
+    base_path = os.getenv("OUTPUT_BASE_PATH")
+    if base_path:
+        if not os.path.isabs(base_path):
+             base_path = os.path.join(Path(__file__).parent.parent.parent, base_path)
+        return (
+            os.path.join(base_path, "finance", "raw_transactions.xlsx"),
+            os.path.join(base_path, "finance", "cleaned_transactions.xlsx")
+        )
+    
+    # 3. 預設：專案根目錄/ai_output/finance
+    project_root = Path(__file__).parent.parent.parent
+    return (
+        os.path.join(project_root, "ai_output", "finance", "raw_transactions.xlsx"),
+        os.path.join(project_root, "ai_output", "finance", "cleaned_transactions.xlsx")
+    )
+
+INPUT, OUTPUT = get_paths()
 
 if not os.path.exists(INPUT):
     print(f"[ERROR] 找不到輸入檔案：{INPUT}")

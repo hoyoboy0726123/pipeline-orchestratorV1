@@ -200,16 +200,18 @@ async def execute_step(
     logger: logging.Logger,
     step_name: str,
     run_id: str = "",
+    working_dir: Optional[str] = None,
 ) -> ExecResult:
     """
     執行 shell 命令，串流輸出到 logger，回傳完整結果。
 
     Args:
-        command:   shell 命令字串
-        timeout:   最大執行秒數
-        logger:    file logger（記錄完整輸出）
-        step_name: 用於 log 標籤
-        run_id:    pipeline run id（用於立即中止追蹤）
+        command:     shell 命令字串
+        timeout:     最大執行秒數
+        logger:      file logger（記錄完整輸出）
+        step_name:   用於 log 標籤
+        run_id:      pipeline run id（用於立即中止追蹤）
+        working_dir: 當前工作目錄（會注入 PIPELINE_OUTPUT_DIR）
 
     Returns:
         ExecResult(exit_code, stdout, stderr)
@@ -223,12 +225,18 @@ async def execute_step(
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
 
+    # 準備環境變數
+    env = _clean_env()
+    if working_dir:
+        # 強制將工作目錄注入環境變數，供腳本讀取
+        env["PIPELINE_OUTPUT_DIR"] = str(Path(working_dir).absolute())
+
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=_clean_env(),
+            env=env,
         )
         if run_id:
             register_proc(run_id, proc)

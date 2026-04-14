@@ -457,19 +457,24 @@ async def run_pipeline(
 
         retries_used = 0
 
+        # 計算當前步驟的工作目錄 (Working Directory)
+        from pathlib import Path as _Path
+        # 定義專案根目錄 (backend/pipeline/runner.py 的上三層)
+        _PROJ_ROOT = _Path(__file__).parent.parent.parent.absolute()
+        
+        # 預設：專案根目錄/ai_output/{pipeline_name}/
+        default_wd = str(_PROJ_ROOT / "ai_output" / config.name)
+        wd = step.working_dir
+        if not wd and step.output and step.output.path:
+            # 展開路徑中的 ~ (如果有的話)
+            wd = str(_Path(step.output.path).expanduser().parent)
+        if not wd:
+            wd = default_wd
+        _Path(wd).mkdir(parents=True, exist_ok=True)
+
         # Retry loop for this step
         while True:
             if step.skill_mode:
-                from pathlib import Path as _Path
-                # 預設工作目錄：~/ai_output/{pipeline_name}/
-                default_wd = str(_Path.home() / "ai_output" / config.name)
-                # working_dir: 優先用 step 指定 → output_path 的目錄 → 預設目錄
-                wd = step.working_dir
-                if not wd and step.output and step.output.path:
-                    wd = str(_Path(step.output.path).expanduser().parent)
-                if not wd:
-                    wd = default_wd
-                _Path(wd).mkdir(parents=True, exist_ok=True)
                 exec_result = await execute_step_with_skill(
                     task_description=step.batch,
                     timeout=step.timeout,
@@ -491,6 +496,7 @@ async def run_pipeline(
                     logger=logger,
                     step_name=step.name,
                     run_id=run.run_id,
+                    working_dir=wd,
                 )
 
             # 快速模式：Recipe 命中 + 執行成功 → 確定性驗證（不叫 LLM）
