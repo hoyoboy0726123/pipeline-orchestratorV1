@@ -314,6 +314,8 @@ export default function PipelinePage() {
   const [showLog, setShowLog]       = useState(false)
   const [logLines, setLogLines]     = useState<string[]>([])
   const logEndRef  = useRef<HTMLDivElement>(null)
+  const logContainerRef = useRef<HTMLDivElement>(null)
+  const logAutoScrollRef = useRef(true)
   const rfInstanceRef = useRef<ReactFlowInstance<AppNode, Edge> | null>(null)
   const [editingName, setEditingName] = useState(false)
   const runIdRef   = useRef<string | null>(null)
@@ -835,10 +837,13 @@ export default function PipelinePage() {
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
 
-  // log 自動捲到底
+  // log 自動捲到底（僅在用戶未手動上捲時）
   useEffect(() => {
-    if (showLog) logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (showLog && logAutoScrollRef.current) logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logLines, showLog])
+
+  // 開啟 log 時重置 auto-scroll
+  useEffect(() => { if (showLog) logAutoScrollRef.current = true }, [showLog])
 
   // ── Editable pipeline name ────────────────────────────────────────────────
   const RunStatusIcon = runStatus === 'running' ? <Loader2 className="w-4 h-4 animate-spin" />
@@ -1131,7 +1136,12 @@ export default function PipelinePage() {
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-5">
+            <div ref={logContainerRef} className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-5"
+              onScroll={() => {
+                const el = logContainerRef.current
+                if (!el) return
+                logAutoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30
+              }}>
               {logLines.length === 0 && (
                 <span className="text-gray-600">尚無 log — 請先執行 Pipeline</span>
               )}

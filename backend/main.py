@@ -453,6 +453,60 @@ async def fs_check_venv(dir: str):
     return {"has_venv": False, "python_path": None}
 
 
+# ── Log Analysis ──────────────────────────────────────────────
+# 常見 module → pip 套件名稱對映（module 名與 pip 名不同的情況）
+_MODULE_TO_PIP = {
+    "cv2": "opencv-python", "PIL": "Pillow", "bs4": "beautifulsoup4",
+    "sklearn": "scikit-learn", "yaml": "pyyaml", "docx": "python-docx",
+    "pptx": "python-pptx", "dotenv": "python-dotenv", "jwt": "pyjwt",
+    "gi": "pygobject", "Crypto": "pycryptodome", "serial": "pyserial",
+    "usb": "pyusb", "magic": "python-magic", "dateutil": "python-dateutil",
+    "attr": "attrs", "lxml": "lxml", "wx": "wxPython",
+}
+
+
+@app.get("/pipeline/logs/analyze")
+async def analyze_logs(count: int = 5):
+    """掃描最近 N 筆 pipeline log，找出 ModuleNotFoundError / ImportError 並建議套件"""
+    from pipeline.logger import LOG_DIR
+    import re
+
+    log_files = sorted(Path(LOG_DIR).glob("*.log"), key=lambda f: f.stat().st_mtime, reverse=True)[:count]
+
+    missing: dict[str, dict] = {}  # module_name → { pip, files }
+    pattern = re.compile(
+        r"(?:ModuleNotFoundError:\s*No module named\s*['\"]([^'\"]+)['\"]"
+        r"|ImportError:\s*cannot import name\s*['\"]?\w+['\"]?\s*from\s*['\"]([^'\"]+)['\"]"
+        r"|ImportError:\s*No module named\s*['\"]([^'\"]+)['\"])"
+    )
+
+    analyzed_files = []
+    for lf in log_files:
+        text = lf.read_text(encoding="utf-8", errors="ignore")
+        found_in_file = False
+        for m in pattern.finditer(text):
+            raw = m.group(1) or m.group(2) or m.group(3)
+            top_module = raw.split(".")[0]
+            pip_name = _MODULE_TO_PIP.get(top_module, top_module)
+            if top_module not in missing:
+                missing[top_module] = {"pip": pip_name, "files": []}
+            if lf.name not in missing[top_module]["files"]:
+                missing[top_module]["files"].append(lf.name)
+            found_in_file = True
+        analyzed_files.append({
+            "name": lf.name,
+            "size": lf.stat().st_size,
+            "has_errors": found_in_file,
+        })
+
+    suggestions = [
+        {"module": mod, "pip_name": info["pip"], "found_in": info["files"]}
+        for mod, info in sorted(missing.items())
+    ]
+
+    return {"analyzed": len(log_files), "files": analyzed_files, "suggestions": suggestions}
+
+
 # ── Pipeline Run ─────────────────────────────────────────────
 class PipelineRunRequest(BaseModel):
     yaml_content: str

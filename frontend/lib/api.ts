@@ -102,6 +102,15 @@ export async function fsCheckVenv(dir: string): Promise<{ has_venv: boolean; pyt
   return res.json()
 }
 
+// ── Log Analysis ────────────────────────────────────────────
+export interface LogSuggestion { module: string; pip_name: string; found_in: string[] }
+export interface LogAnalysis { analyzed: number; files: { name: string; size: number; has_errors: boolean }[]; suggestions: LogSuggestion[] }
+export async function analyzeRecentLogs(count: number = 5): Promise<LogAnalysis> {
+  const res = await fetch(`${BASE}/pipeline/logs/analyze?count=${count}`)
+  if (!res.ok) throw new Error('分析失敗')
+  return res.json()
+}
+
 // ── Files ───────────────────────────────────────────────────
 export async function listFiles(path = ''): Promise<FileItem[]> {
   const res = await fetch(`${BASE}/files?path=${encodeURIComponent(path)}`)
