@@ -41,7 +41,8 @@ class PipelineRun:
     workflow_id: Optional[str] = None
     pending_recipes: list = field(default_factory=list)  # list[dict] — 延遲儲存的 recipes
     awaiting_type: str = ""       # "" | "failure" | "human_confirm"
-    awaiting_message: str = ""    # 人工確認節點的自訂訊息
+    awaiting_message: str = ""    # 人工確認節點的自訂訊息 / 失敗原因
+    awaiting_suggestion: str = "" # 失敗時的解決建議（套件安裝、工具選擇等）
 
 
 class RunStore:

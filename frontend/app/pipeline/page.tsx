@@ -308,6 +308,7 @@ export default function PipelinePage() {
   const [awaitingRunId, setAwaitingRunId] = useState<string | null>(null)
   const [awaitingType, setAwaitingType] = useState<'failure' | 'confirm'>('failure')
   const [awaitingMessage, setAwaitingMessage] = useState('')
+  const [awaitingSuggestion, setAwaitingSuggestion] = useState('')
   const [showRecipeConfirm, setShowRecipeConfirm] = useState(false)
   const [pendingRecipeRunId, setPendingRecipeRunId] = useState<string | null>(null)
   const [pendingRecipeCount, setPendingRecipeCount] = useState(0)
@@ -374,6 +375,7 @@ export default function PipelinePage() {
             const isConfirm = (active as any).awaiting_type === 'human_confirm'
             setAwaitingType(isConfirm ? 'confirm' : 'failure')
             setAwaitingMessage((active as any).awaiting_message || '')
+            setAwaitingSuggestion((active as any).awaiting_suggestion || '')
           } else {
             setRunStatus('running')
           }
@@ -693,23 +695,104 @@ export default function PipelinePage() {
     }
   }
 
+  // 中止後：拉取最終 log 與節點狀態，然後延遲重啟背景偵測
+  const finalizeAbort = async (rid: string) => {
+    // 等一下讓後端處理完中止
+    await new Promise(r => setTimeout(r, 1500))
+    try {
+      const [data, logRes] = await Promise.all([
+        getPipelineRun(rid).catch(() => null),
+        getPipelineLog(rid).catch(() => null),
+      ])
+      // 更新 log 面板
+      if (logRes?.log) setLogLines(logRes.log.split('\n'))
+      // 更新節點狀態
+      if (data) {
+        const statusMap: Record<string, { status: 'idle' | 'running' | 'success' | 'failed'; errorMsg: string }> = {}
+        const steps = data.config_dict?.steps ?? []
+        for (const step of steps) {
+          const result = data.step_results?.find((s: any) => s.step_name === step.name)
+          if (result) {
+            statusMap[step.name] = {
+              status: result.validation_status === 'failed' ? 'failed' : 'success',
+              errorMsg: result.validation_reason ?? '',
+            }
+          } else {
+            // 未完成的步驟標記為 idle（中止後不再 running）
+            statusMap[step.name] = { status: 'idle', errorMsg: '' }
+          }
+        }
+        useRunStatusStore.getState().setBulkStatus(statusMap)
+      }
+      useRunStatusStore.getState().setEdgesAnimated(false)
+    } catch { /* ignore — UI 已設為 failed */ }
+    // 延遲重啟背景偵測
+    setTimeout(() => {
+      if (!bgDetectRef.current && pipelineName) {
+        const detect = async () => {
+          if (runIdRef.current) return
+          try {
+            const runs = await getPipelineRuns()
+            const active = runs.find(
+              (r: any) => (r.status === 'running' || r.status === 'awaiting_human') && r.pipeline_name === pipelineName
+            )
+            if (active && !runIdRef.current) {
+              runIdRef.current = active.run_id
+              setRunning(true)
+              if (active.status === 'awaiting_human') {
+                setRunStatus('awaiting')
+                setAwaitingRunId(active.run_id)
+                const isConfirm = (active as any).awaiting_type === 'human_confirm'
+                setAwaitingType(isConfirm ? 'confirm' : 'failure')
+                setAwaitingMessage((active as any).awaiting_message || '')
+                setAwaitingSuggestion((active as any).awaiting_suggestion || '')
+              } else {
+                setRunStatus('running')
+              }
+              setShowLog(true)
+              toast.info('偵測到排程執行中')
+              pollStatus(active.run_id)
+              pollRef.current = setInterval(() => pollStatus(active.run_id), 1500)
+            }
+          } catch { /* ignore */ }
+        }
+        bgDetectRef.current = setInterval(detect, 3000)
+      }
+    }, 3500)
+  }
+
   const handleAbort = async () => {
     const rid = runIdRef.current
     if (!rid) return
+    // 立即清除所有 UI 狀態（避免 in-flight poll 覆蓋）
+    runIdRef.current = null
+    if (pollRef.current) clearInterval(pollRef.current)
+    if (bgDetectRef.current) { clearInterval(bgDetectRef.current); bgDetectRef.current = null }
+    setRunning(false)
+    setRunStatus('failed')
+    setAwaitingRunId(null)
+    toast.dismiss('awaiting')
     try {
+      // 執行中（running）用 force abort（/abort），才能 kill 子進程
       const res = await abortPipeline(rid)
       toast.info(res.message)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '中止失敗')
     }
+    finalizeAbort(rid)
   }
 
   const pollStatus = async (runId: string) => {
+    // 若 polling 已被中止（abort/清除），直接丟棄此次回應
+    if (!runIdRef.current) return
     try {
       const [data, logRes] = await Promise.all([
         getPipelineRun(runId),
         getPipelineLog(runId).catch(() => null),
       ])
+
+      // 再次確認：收到回應後若 runId 已被清除，不處理
+      if (!runIdRef.current) return
 
       // 每次 poll 同步更新 log
       if (logRes?.log) setLogLines(logRes.log.split('\n'))
@@ -744,6 +827,7 @@ export default function PipelinePage() {
           const isConfirm = data.awaiting_type === 'human_confirm'
           setAwaitingType(isConfirm ? 'confirm' : 'failure')
           setAwaitingMessage(data.awaiting_message || '')
+          setAwaitingSuggestion(data.awaiting_suggestion || '')
           toast[isConfirm ? 'info' : 'warning'](
             isConfirm ? '✋ 等待人工確認' : '步驟執行失敗，請選擇處理方式',
             { duration: 0, id: 'awaiting' }
@@ -756,6 +840,7 @@ export default function PipelinePage() {
         setRunStatus(data.status === 'running' ? 'running' : 'idle')
         setRunning(data.status === 'running')
         setAwaitingRunId(null)
+        setAwaitingSuggestion('')
         setShowHintInput(false)
         setHintText('')
         toast.dismiss('awaiting')
@@ -808,21 +893,31 @@ export default function PipelinePage() {
 
   const handleDecision = async (decision: 'retry' | 'skip' | 'abort' | 'continue' | 'retry_with_hint', hint?: string) => {
     if (!awaitingRunId) return
-    try {
-      if (decision === 'abort') {
-        await abortPipeline(awaitingRunId)
-        setRunStatus('failed')
-        setRunning(false)
-        setAwaitingRunId(null)
-        runIdRef.current = null
-        toast.dismiss('awaiting')
+    const rid = awaitingRunId
+
+    if (decision === 'abort') {
+      // 立即清除 UI 狀態
+      setRunStatus('failed')
+      setRunning(false)
+      setAwaitingRunId(null)
+      runIdRef.current = null
+      toast.dismiss('awaiting')
+      if (pollRef.current) clearInterval(pollRef.current)
+      if (bgDetectRef.current) { clearInterval(bgDetectRef.current); bgDetectRef.current = null }
+      setShowHintInput(false)
+      setHintText('')
+      try {
+        // 走和重試相同的 /resume 路徑（已支援 decision='abort'），避免 /abort 端點問題
+        await resumePipeline(rid, 'abort')
         toast.info('Pipeline 已中止')
-        if (pollRef.current) clearInterval(pollRef.current)
-        setShowHintInput(false)
-        setHintText('')
-        return
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : '中止失敗（後端狀態可能已變更）')
       }
-      const rid = awaitingRunId
+      finalizeAbort(rid)
+      return
+    }
+
+    try {
       await resumePipeline(rid, decision, hint)
       setRunStatus('running')
       setRunning(true)
@@ -1011,7 +1106,8 @@ export default function PipelinePage() {
 
         {/* Awaiting human decision banner */}
         {runStatus === 'awaiting' && awaitingRunId && awaitingType === 'failure' && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-amber-50 border border-amber-200 rounded-2xl shadow-lg px-5 py-3 space-y-2 max-w-[560px]">
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-amber-50 border border-amber-200 rounded-2xl shadow-lg px-5 py-3 space-y-2 max-w-[600px] w-[95%]">
+            {/* 標題列 + 操作按鈕 */}
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-amber-600 font-medium text-sm whitespace-nowrap">⚠️ 步驟失敗，請選擇處理方式</span>
               <div className="flex items-center gap-2 ml-auto">
@@ -1020,13 +1116,39 @@ export default function PipelinePage() {
                 <button onClick={() => handleDecision('abort')} className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 whitespace-nowrap">🛑 中止</button>
               </div>
             </div>
+            {/* 失敗原因 */}
+            {awaitingMessage && (
+              <div className="bg-amber-100 border border-amber-200 rounded-lg px-3 py-2">
+                <p className="text-xs font-semibold text-amber-700 mb-0.5">失敗原因</p>
+                <p className="text-xs text-amber-800 leading-relaxed">{awaitingMessage}</p>
+              </div>
+            )}
+            {/* AI 解決建議 */}
+            {awaitingSuggestion && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-blue-700 mb-0.5">💡 AI 建議</p>
+                    <p className="text-xs text-blue-800 leading-relaxed">{awaitingSuggestion}</p>
+                  </div>
+                  <a
+                    href="/settings"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 px-2.5 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700 whitespace-nowrap"
+                    title="前往設定頁面安裝套件"
+                  >⚙️ 安裝套件</a>
+                </div>
+              </div>
+            )}
+            {/* 補充指示輸入框 */}
             {showHintInput && (
               <div className="flex gap-2">
                 <input
                   value={hintText}
                   onChange={e => setHintText(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && hintText.trim()) handleDecision('retry_with_hint', hintText.trim()) }}
-                  placeholder="例如：改用 selenium、檢查 CSS selector…"
+                  placeholder="例如：改用 playwright、調整抓取邏輯…"
                   className="flex-1 border border-amber-300 rounded-lg px-2.5 py-1.5 text-xs outline-none focus:border-purple-400 bg-white"
                   autoFocus
                 />

@@ -9,3 +9,9 @@ requests
 beautifulsoup4
 Pillow
 python-docx
+cloudscraper
+fake-useragent
+httpx[http2]
+newspaper3k
+yfinance
+selenium

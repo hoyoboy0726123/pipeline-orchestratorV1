@@ -101,4 +101,5 @@ export interface PipelineRun {
   pending_recipes?: Array<{ step_name: string }>
   awaiting_type?: 'failure' | 'human_confirm'
   awaiting_message?: string
+  awaiting_suggestion?: string
 }

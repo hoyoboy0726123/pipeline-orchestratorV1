@@ -9,6 +9,7 @@ GROQ_MODEL_MAIN = os.getenv("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-inst
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL_MAIN = os.getenv("GEMINI_MODEL", "gemma-4-31b-it")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
 TIMEZONE           = os.getenv("TIMEZONE", "Asia/Taipei")
 OUTPUT_BASE_PATH   = Path(os.getenv("OUTPUT_BASE_PATH", "~/ai_output")).expanduser()

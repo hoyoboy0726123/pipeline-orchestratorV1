@@ -827,4 +827,5 @@ def _run_to_dict(r):
         "pending_recipes": getattr(r, 'pending_recipes', []) or [],
         "awaiting_type": getattr(r, 'awaiting_type', '') or '',
         "awaiting_message": getattr(r, 'awaiting_message', '') or '',
+        "awaiting_suggestion": getattr(r, 'awaiting_suggestion', '') or '',
     }

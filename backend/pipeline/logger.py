@@ -47,3 +47,24 @@ def create_run_logger(run_id: str, pipeline_name: str) -> tuple[logging.Logger, 
 def get_run_logger(run_id: str) -> logging.Logger:
     """回傳已存在的 logger（不保證有 handler，恢復 run 時用）"""
     return logging.getLogger(f"pipeline.{run_id}")
+
+
+def resume_run_logger(run_id: str, log_path: str) -> logging.Logger:
+    """
+    恢復執行時，附加到現有的 log 檔案（不建立新檔）。
+    用於 resume_pipeline 與 run_pipeline 恢復路徑，確保前端讀到的
+    log_path 始終是同一個檔案。
+    """
+    logger = logging.getLogger(f"pipeline.{run_id}")
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    if logger.handlers:
+        for h in logger.handlers[:]:
+            logger.removeHandler(h)
+    fh = logging.FileHandler(log_path, mode='a', encoding='utf-8')
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)-8s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    logger.addHandler(fh)
+    return logger

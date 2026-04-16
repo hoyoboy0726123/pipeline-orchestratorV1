@@ -205,6 +205,7 @@ class ExecResult:
     stdout: str
     stderr: str
     pending_recipe: Optional[dict] = None  # 延遲儲存的 recipe 資料
+    missing_packages: list = None          # LLM 回報缺少的套件（供 runner 產生安裝建議）
 
 
 async def execute_step(
@@ -623,6 +624,7 @@ async def execute_step_with_skill(
     no_save_recipe: bool = False,
     readonly: bool = False,
     run_id: str = "",
+    previous_failures: Optional[list] = None,
 ) -> ExecResult:
     """
     Skill 模式執行器：LLM 解讀自然語言任務描述，自主撰寫並執行程式碼。
@@ -739,9 +741,18 @@ async def execute_step_with_skill(
 4. done — 任務完成，回報結果
    用法：<tool>done</tool>
    <input>{"success": true, "summary": "簡述完成了什麼"}</input>
-   如果失敗：
+   
+   如果失敗（僅在**已窮盡所有可用工具與方法**後才呼叫）：
    <tool>done</tool>
-   <input>{"success": false, "error": "失敗原因"}</input>
+   <input>{
+     "success": false,
+     "error": "說明所有已嘗試的方法及各自失敗的原因，以及為什麼現有套件無法完成任務。",
+     "missing_packages": ["可能解決問題但尚未安裝的套件A", "套件B"]
+   }</input>
+   注意：
+   - **必須先在已安裝套件中嘗試所有可行的替代方案，確認全部失敗後，才能呼叫 done(success=false)**
+   - missing_packages 只填入**目前未安裝**、但安裝後有合理機率解決問題的套件
+   - 不要因為第一個方案失敗就放棄，要主動切換工具或策略繼續嘗試
 
 【可用 Python 套件】
 標準庫：csv, json, random, os, pathlib, re, math, datetime, io, collections, itertools, functools, glob, shutil, hashlib, urllib
@@ -781,6 +792,15 @@ async def execute_step_with_skill(
 - **如果任務需要讀取其他檔案（CSV、Excel 等），第一步先用 run_python 讀取檔案的前幾行，確認實際欄位名稱**
 - **確認欄位名稱後，再寫完整的處理程式碼**
 - **不要猜測欄位名稱，一定要先確認**
+
+【重試策略（重要）】
+- **如果上一次嘗試失敗，絕對不要用相同的方法重試**
+- **每次重試前，先回顧對話歷史中已嘗試過的所有方法，選擇一個尚未使用過的不同套件或策略**
+- **利用已安裝套件清單，系統性地找出所有能完成此任務的替代方案並逐一嘗試**
+  - 例如：若 requests + beautifulsoup4 失敗，改試 urllib；若需要試不同的解析/處理策略，也要切換
+  - 例如：若某種資料格式的讀取方法失敗，改試其他已安裝的相容套件
+- **只有當已安裝的所有可行方案都已嘗試並全部失敗後，才呼叫 done(success=false)**
+- **在呼叫 done(success=false) 時，missing_packages 填入安裝後可能解決問題的套件（必須是目前未安裝的）**
 
 【最重要：正確的工具呼叫格式】
 - **每次回覆只能包含一個工具呼叫，且所有程式碼必須完整放在 <tool> 和 <input> 標籤內**
@@ -832,9 +852,28 @@ async def execute_step_with_skill(
     else:
         system_prompt = system_prompt.replace("{installed_packages}", "pandas, openpyxl, matplotlib, requests, beautifulsoup4, Pillow, python-docx")
 
+    # ── 注入前次失敗歷史（重試時） ──
+    failures_hint = ""
+    if previous_failures:
+        logger.info(f"[{step_name}] 🔄 重試：注入 {len(previous_failures)} 條失敗歷史到 user_prompt")
+        lines = ["\n\n【⚠️ 前次嘗試失敗記錄 — 本次必須改用不同方法】"]
+        for f in previous_failures:
+            lines.append(f"\n第 {f['attempt']} 次嘗試失敗：")
+            lines.append(f"  失敗原因：{f['reason']}")
+            if f.get("suggestion"):
+                lines.append(f"  驗證建議：{f['suggestion']}")
+            if f.get("stdout_tail"):
+                lines.append(f"  程式輸出（尾段）：{f['stdout_tail'][:400]}")
+            if f.get("stderr_tail"):
+                lines.append(f"  錯誤訊息：{f['stderr_tail'][:200]}")
+        lines.append("\n→ 請分析上方失敗原因，改用已安裝套件中尚未嘗試過的不同方法或套件來完成任務。")
+        failures_hint = "\n".join(lines)
+    else:
+        logger.debug(f"[{step_name}] 初次執行（無失敗歷史）")
+
     user_prompt = f"""請完成以下任務：
 
-{task_description}{output_hint}{wd_hint}{prev_hint}
+{task_description}{output_hint}{wd_hint}{prev_hint}{failures_hint}
 
 請直接使用 <tool>run_python</tool> 執行完整程式碼，不要用 markdown 展示。"""
 
@@ -957,11 +996,15 @@ async def execute_step_with_skill(
                                 )
                         except Exception as e:
                             logger.warning(f"[{step_name}] Recipe 儲存失敗：{e}")
+                    pkgs = data.get("missing_packages", []) if not success else []
+                    if pkgs:
+                        logger.info(f"[{step_name}] LLM 回報缺少套件：{pkgs}")
                     return ExecResult(
                         exit_code=0 if success else 1,
                         stdout="\n".join(all_stdout),
                         stderr="" if success else summary,
                         pending_recipe=_pending_recipe,
+                        missing_packages=pkgs or None,
                     )
                 except json.JSONDecodeError:
                     messages.append(HumanMessage(content=reply))
