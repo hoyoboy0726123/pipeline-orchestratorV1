@@ -337,11 +337,25 @@ def delete_workflow_recipes(workflow_id: str) -> int:
     return cur.rowcount
 
 
+def _find_recipe(workflow_id: str, step_name: str) -> Optional[dict]:
+    """查找 recipe：先精確匹配，再嘗試「N:name」索引格式（相容新舊 key）。"""
+    r = get_recipe(workflow_id, step_name)
+    if r:
+        return r
+    # 新格式：step_name 存為 "1:AI技能 1"，前端傳 "AI技能 1"
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM recipes WHERE workflow_id=? AND step_name LIKE ?",
+        (workflow_id, f"%:{step_name}"),
+    ).fetchone()
+    return _row_to_recipe(row) if row else None
+
+
 def get_recipe_status(workflow_id: str, step_names: list[str]) -> dict:
     steps_info = {}
     covered = 0
     for name in step_names:
-        r = get_recipe(workflow_id, name)
+        r = _find_recipe(workflow_id, name)
         if r and not r["disabled"]:
             steps_info[name] = {"has_recipe": True, "success_count": r["success_count"],
                                 "avg_runtime_sec": round(r["avg_runtime_sec"], 1)}

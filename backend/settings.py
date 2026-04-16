@@ -16,6 +16,8 @@ _DEFAULT = {
     "ollama_base_url": "http://localhost:11434",
     "ollama_thinking": "off",      # "auto" | "on" | "off" — 預���關閉，避免 thinking 模式 rambling 卡��
     "ollama_num_ctx": 16384,       # Ollama context window tokens（僅 Ollama）
+    "gemini_thinking": "off",      # "off" | "auto" | "low" | "medium" | "high"
+    "openrouter_thinking": "off",  # "off" | "on" — DeepSeek R1 等模型的思考模式
     # 通知設定
     "telegram_bot_token": "",
     "telegram_chat_id": "",
@@ -53,16 +55,24 @@ def update_settings(
     ollama_base_url: Optional[str] = None,
     ollama_thinking: Optional[str] = None,
     ollama_num_ctx: Optional[int] = None,
+    gemini_thinking: Optional[str] = None,
+    openrouter_thinking: Optional[str] = None,
 ) -> dict:
     """更新並寫入磁碟。"""
     global _cache
-    if provider not in ("groq", "ollama", "gemini"):
+    if provider not in ("groq", "ollama", "gemini", "openrouter"):
         raise ValueError(f"unsupported provider: {provider}")
     if not model or not isinstance(model, str):
         raise ValueError("model is required")
     thinking = (ollama_thinking or "off").strip()
     if thinking not in ("auto", "on", "off"):
         raise ValueError(f"invalid ollama_thinking: {thinking}")
+    gem_thinking = (gemini_thinking or "off").strip()
+    if gem_thinking not in ("off", "auto", "low", "medium", "high"):
+        raise ValueError(f"invalid gemini_thinking: {gem_thinking}")
+    or_thinking = (openrouter_thinking or "off").strip()
+    if or_thinking not in ("off", "on"):
+        raise ValueError(f"invalid openrouter_thinking: {or_thinking}")
     num_ctx = ollama_num_ctx if ollama_num_ctx is not None else _DEFAULT["ollama_num_ctx"]
     if not isinstance(num_ctx, int) or num_ctx < 2048 or num_ctx > 262144:
         raise ValueError(f"invalid ollama_num_ctx: {num_ctx}（需介於 2048~262144）")
@@ -76,6 +86,8 @@ def update_settings(
             "ollama_base_url": (ollama_base_url or _DEFAULT["ollama_base_url"]).strip(),
             "ollama_thinking": thinking,
             "ollama_num_ctx": num_ctx,
+            "gemini_thinking": gem_thinking,
+            "openrouter_thinking": or_thinking,
         })
         _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:

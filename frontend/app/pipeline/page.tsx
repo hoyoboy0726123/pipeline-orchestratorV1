@@ -835,16 +835,19 @@ export default function PipelinePage() {
         }
         return
       }
-      // 如果之前在 awaiting，現在狀態改變了（Telegram 確認了）→ 重新同步
+      // 如果之前在 awaiting，現在狀態改變了（Telegram 確認了 / 前端按繼續了）→ 重新同步
       if (runStatusRef.current === 'awaiting') {
-        setRunStatus(data.status === 'running' ? 'running' : 'idle')
-        setRunning(data.status === 'running')
         setAwaitingRunId(null)
         setAwaitingSuggestion('')
         setShowHintInput(false)
         setHintText('')
         toast.dismiss('awaiting')
-        if (data.status === 'running') toast.success('Pipeline 已恢復執行')
+        // 如果後端已是 completed/failed/aborted，不設 idle，讓下方 done 分支處理
+        if (data.status === 'running') {
+          setRunStatus('running')
+          setRunning(true)
+          toast.success('Pipeline 已恢復執行')
+        }
       }
 
       const done = data.status === 'completed' || data.status === 'failed' || data.status === 'aborted'
@@ -919,14 +922,18 @@ export default function PipelinePage() {
 
     try {
       await resumePipeline(rid, decision, hint)
-      setRunStatus('running')
-      setRunning(true)
+      // Guard：poll 可能在 await 期間已完成 pipeline（例如最後一步是人工確認）
+      // 此時 runIdRef.current 已被 poll 的 done 分支清空，不可再覆寫狀態
       setAwaitingRunId(null)
       toast.dismiss('awaiting')
       setShowHintInput(false)
       setHintText('')
-      // 立即觸發一次 poll，捕捉「最後一步是人工確認 → 直接完成」的情境
-      setTimeout(() => pollStatus(rid), 500)
+      if (runIdRef.current) {
+        setRunStatus('running')
+        setRunning(true)
+        // 立即觸發一次 poll，捕捉「最後一步是人工確認 → 直接完成」的情境
+        setTimeout(() => pollStatus(rid), 500)
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '操作失敗')
     }

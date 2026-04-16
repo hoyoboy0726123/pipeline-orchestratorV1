@@ -497,6 +497,8 @@ async def run_pipeline(
         # Retry loop for this step
         while True:
             if step.skill_mode:
+                # recipe key 使用「索引:名稱」避免同名步驟互相覆蓋
+                recipe_step_key = f"{step_num}:{step.name}"
                 exec_result = await execute_step_with_skill(
                     task_description=step.batch,
                     timeout=step.timeout,
@@ -511,6 +513,7 @@ async def run_pipeline(
                     readonly=step.readonly,
                     run_id=run.run_id,
                     previous_failures=step_failures if step_failures else None,
+                    recipe_step_key=recipe_step_key,
                 )
             else:
                 exec_result = await execute_step(

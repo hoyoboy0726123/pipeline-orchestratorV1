@@ -625,6 +625,7 @@ async def execute_step_with_skill(
     readonly: bool = False,
     run_id: str = "",
     previous_failures: Optional[list] = None,
+    recipe_step_key: Optional[str] = None,
 ) -> ExecResult:
     """
     Skill 模式執行器：LLM 解讀自然語言任務描述，自主撰寫並執行程式碼。
@@ -653,13 +654,14 @@ async def execute_step_with_skill(
     logger.info(f"[{step_name}] 🔬 Skill 模式啟動：{task_description}")
 
     # ── Recipe Book：檢查是否有可重用的成功快取 ────────────────────────────
+    _rkey = recipe_step_key or step_name  # recipe DB key（含索引，避免同名覆蓋）
     input_paths = [po["path"] for po in (prev_outputs or []) if po.get("path")]
     if pipeline_id and use_recipe:
         try:
             from db import get_recipe, match_recipe, save_recipe, mark_recipe_failed
             from pipeline.recipe import _sha1 as _recipe_sha1, _fingerprint_input as _recipe_fp
             # Debug: 先載入 recipe 看詳細匹配狀況
-            _raw = get_recipe(pipeline_id, step_name)
+            _raw = get_recipe(pipeline_id, _rkey)
             if _raw:
                 _cur_hash = _recipe_sha1(task_description)
                 _cur_fps = {p: _recipe_fp(p) for p in input_paths}
@@ -681,7 +683,7 @@ async def execute_step_with_skill(
             else:
                 logger.debug(f"[{step_name}] 📖 無 Recipe 紀錄")
             _fp = {p: _recipe_fp(p) for p in input_paths}
-            cached = match_recipe(pipeline_id, step_name, _recipe_sha1(task_description), _fp)
+            cached = match_recipe(pipeline_id, _rkey, _recipe_sha1(task_description), _fp)
             if cached:
                 logger.info(
                     f"[{step_name}] 📖 找到快取 recipe (成功 {cached['success_count']} 次, "
@@ -700,14 +702,14 @@ async def execute_step_with_skill(
                     ok = Path(output_path).exists()
                 if ok:
                     import sys as _sys
-                    save_recipe(pipeline_id, step_name, _recipe_sha1(task_description),
+                    save_recipe(pipeline_id, _rkey, _recipe_sha1(task_description),
                                 _fp, output_path, cached["code"],
                                 f"{_sys.version_info.major}.{_sys.version_info.minor}", runtime)
                     logger.info(f"[{step_name}] ✅ Recipe 重跑成功（{runtime:.1f}s）")
                     return ExecResult(exit_code=0, stdout=tool_result, stderr="__RECIPE_HIT__")
                 else:
                     logger.warning(f"[{step_name}] Recipe 重跑失敗，改用 LLM 重新學習。輸出：{tool_result[:300]}")
-                    mark_recipe_failed(pipeline_id, step_name)
+                    mark_recipe_failed(pipeline_id, _rkey)
         except Exception as e:
             logger.warning(f"[{step_name}] Recipe 檢查失敗：{e}")
     # ───────────────────────────────────────────────────────────────────────
@@ -891,7 +893,7 @@ async def execute_step_with_skill(
         same_error_count = 0   # 連續相同錯誤計數
         import time as _time
         skill_start_time = _time.time()
-        last_successful_code: Optional[str] = None  # 供 Recipe Book 儲存
+        last_successful_code: Optional[str] = None  # 供 Recipe Book 儲存：只記最後一段成功的 run_python
 
         for iteration in range(SKILL_MAX_ITERATIONS):
             logger.info(f"[{step_name}] Skill 執行迭代 {iteration + 1}/{SKILL_MAX_ITERATIONS}")
@@ -963,7 +965,7 @@ async def execute_step_with_skill(
                                 _fp[str(p)] = _recipe_fp(p)
                             recipe_data = {
                                 "pipeline_id": pipeline_id,
-                                "step_name": step_name,
+                                "step_name": _rkey,
                                 "task_hash": _recipe_sha1(task_description),
                                 "input_fingerprints": _fp,
                                 "output_path": output_path,
@@ -974,7 +976,7 @@ async def execute_step_with_skill(
                             if no_save_recipe:
                                 # 延遲模式：檢查是否已有 recipe
                                 from db import get_recipe as _get_recipe, save_recipe as _db_save_recipe
-                                existing = _get_recipe(pipeline_id, step_name)
+                                existing = _get_recipe(pipeline_id, _rkey)
                                 if existing:
                                     # 已有 recipe → 延遲儲存等用戶確認（避免覆蓋）
                                     _pending_recipe = recipe_data
@@ -982,7 +984,7 @@ async def execute_step_with_skill(
                                 else:
                                     # 無 recipe → 直接儲存（建立新的不算覆蓋）
                                     _db_save_recipe(
-                                        pipeline_id, step_name, recipe_data["task_hash"],
+                                        pipeline_id, _rkey, recipe_data["task_hash"],
                                         _fp, output_path, last_successful_code,
                                         recipe_data["python_version"], runtime,
                                     )
@@ -990,7 +992,7 @@ async def execute_step_with_skill(
                             else:
                                 from db import save_recipe as _db_save_recipe
                                 _db_save_recipe(
-                                    pipeline_id, step_name, recipe_data["task_hash"],
+                                    pipeline_id, _rkey, recipe_data["task_hash"],
                                     _fp, output_path, last_successful_code,
                                     recipe_data["python_version"], runtime,
                                 )

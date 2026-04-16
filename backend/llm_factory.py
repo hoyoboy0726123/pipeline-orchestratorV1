@@ -1,11 +1,19 @@
-"""根據使用者設定建立 LLM client（支援 Groq / Ollama）。"""
+"""根據使用者設定建立 LLM client（支援 Groq / Gemini / Ollama / OpenRouter）。"""
 import asyncio
 import logging
 import time
 from typing import Any, Optional
 
-from config import GROQ_API_KEY, GEMINI_API_KEY
+from config import GROQ_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY
 from settings import get_settings
+
+
+# Gemini 2.5 系列使用 thinking_budget，3.x 系列使用 thinking_level
+_GEMINI_3X_PREFIXES = ("gemini-3-", "gemini-3.", "gemini-3.1")
+
+
+def _is_gemini_3x(model: str) -> bool:
+    return any(model.startswith(p) for p in _GEMINI_3X_PREFIXES)
 
 
 def build_llm(temperature: float = 0.0) -> Any:
@@ -20,10 +28,34 @@ def build_llm(temperature: float = 0.0) -> Any:
 
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(
+        gem_thinking = s.get("gemini_thinking", "off")
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "google_api_key": GEMINI_API_KEY,
+            "temperature": temperature,
+            "max_output_tokens": 8192,  # 防止 gemma 等模型無限生成
+        }
+        # 只有 gemini-2.5 和 gemini-3.x 系列支援思考模式，其他模型（gemma, gemini-2.0）靜默忽略
+        supports_thinking = model.startswith("gemini-2.5-") or _is_gemini_3x(model)
+        if gem_thinking != "off" and supports_thinking:
+            if _is_gemini_3x(model):
+                kwargs["thinking_level"] = gem_thinking if gem_thinking != "auto" else "medium"
+            else:
+                budget_map = {"auto": -1, "low": 1024, "medium": 4096, "high": 16384}
+                kwargs["thinking_budget"] = budget_map.get(gem_thinking, -1)
+        return ChatGoogleGenerativeAI(**kwargs)
+
+    if provider == "openrouter":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
             model=model,
-            google_api_key=GEMINI_API_KEY,
+            api_key=OPENROUTER_API_KEY,
+            base_url="https://openrouter.ai/api/v1",
             temperature=temperature,
+            default_headers={
+                "HTTP-Referer": "http://localhost:3002",
+                "X-Title": "Pipeline Orchestrator",
+            },
         )
 
     if provider == "ollama":

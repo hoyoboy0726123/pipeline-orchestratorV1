@@ -56,23 +56,15 @@ async def health():
 
 
 # ── Settings（模型選擇）─────────────────────────────────────
-# Groq 平台可選模型（2025 現役列表，按推理能力排序）
-_GROQ_MODEL_PRESETS = [
-    {"id": "meta-llama/llama-4-scout-17b-16e-instruct", "label": "Llama 4 Scout 17B（目前預設）"},
-    {"id": "meta-llama/llama-4-maverick-17b-128e-instruct", "label": "Llama 4 Maverick 17B（更強推理）"},
-    {"id": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B Versatile（推理強）"},
-    {"id": "llama-3.1-8b-instant", "label": "Llama 3.1 8B Instant（最快，最省配額）"},
-    {"id": "moonshotai/kimi-k2-instruct", "label": "Kimi K2 Instruct（code 強）"},
-    {"id": "deepseek-r1-distill-llama-70b", "label": "DeepSeek R1 Distill 70B（推理型）"},
-    {"id": "qwen/qwen3-32b", "label": "Qwen3 32B"},
-    {"id": "openai/gpt-oss-120b", "label": "GPT-OSS 120B"},
-    {"id": "openai/gpt-oss-20b", "label": "GPT-OSS 20B"},
-]
+# 排除的 Groq 模型（非文字生成用途）
+_GROQ_EXCLUDE_PREFIXES = ("whisper-", "llama-prompt-guard", "canopylabs/orpheus")
 
-# Gemini 固定模型（使用者指定）
-_GEMINI_MODEL_PRESETS = [
-    {"id": "gemma-4-31b-it", "label": "Gemma 4 31B IT（固定）"},
-]
+# Gemini 可用於文字生成的模型前綴（排除 embedding, tts, robotics, audio 等）
+_GEMINI_TEXT_PREFIXES = ("gemini-2.5-", "gemini-2.0-", "gemini-3-", "gemini-3.", "gemma-")
+_GEMINI_EXCLUDE_KEYWORDS = ("tts", "audio", "embedding", "robotics", "image", "live", "customtools", "computer-use")
+
+# 支援思考模式的 Gemini 模型前綴
+_GEMINI_THINKING_PREFIXES = ("gemini-2.5-", "gemini-3-", "gemini-3.")
 
 
 @app.get("/settings/model")
@@ -85,8 +77,10 @@ class ModelSettingsRequest(BaseModel):
     provider: str
     model: str
     ollama_base_url: Optional[str] = None
-    ollama_thinking: Optional[str] = None  # "auto" | "on" | "off"
+    ollama_thinking: Optional[str] = None   # "auto" | "on" | "off"
     ollama_num_ctx: Optional[int] = None
+    gemini_thinking: Optional[str] = None   # "off" | "auto" | "low" | "medium" | "high"
+    openrouter_thinking: Optional[str] = None  # "off" | "on"
 
 
 @app.put("/settings/model")
@@ -94,7 +88,8 @@ async def put_model_settings(req: ModelSettingsRequest):
     from settings import update_settings
     try:
         return update_settings(
-            req.provider, req.model, req.ollama_base_url, req.ollama_thinking, req.ollama_num_ctx
+            req.provider, req.model, req.ollama_base_url, req.ollama_thinking, req.ollama_num_ctx,
+            req.gemini_thinking, req.openrouter_thinking,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -102,9 +97,19 @@ async def put_model_settings(req: ModelSettingsRequest):
 
 @app.get("/settings/models/available")
 async def get_available_models():
-    """列出 Groq 預設模型 + 本機 Ollama 可用模型。"""
+    """動態列出各 provider 可用模型。"""
+    import httpx
+    from config import GROQ_API_KEY as _groq_key, GEMINI_API_KEY as _gemini_key, OPENROUTER_API_KEY as _or_key
+
     ollama_models: list[dict] = []
     ollama_error: Optional[str] = None
+    groq_models: list[dict] = []
+    groq_error: Optional[str] = None
+    gemini_models: list[dict] = []
+    gemini_error: Optional[str] = None
+    openrouter_models: list[dict] = []
+    openrouter_error: Optional[str] = None
+
     base_url = "http://localhost:11434"
     try:
         from settings import get_settings as _gs
@@ -112,13 +117,93 @@ async def get_available_models():
     except Exception:
         pass
 
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            r = await client.get(f"{base_url.rstrip('/')}/api/tags")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        # ── Groq（動態取得真實模型清單）──
+        if _groq_key:
+            try:
+                r = await client.get(
+                    "https://api.groq.com/openai/v1/models",
+                    headers={"Authorization": f"Bearer {_groq_key}"},
+                )
+                r.raise_for_status()
+                for m in r.json().get("data", []):
+                    mid = m.get("id", "")
+                    if not m.get("active", True):
+                        continue
+                    if any(mid.startswith(p) for p in _GROQ_EXCLUDE_PREFIXES):
+                        continue
+                    ctx = m.get("context_window", 0)
+                    owner = m.get("owned_by", "")
+                    label = mid
+                    if owner:
+                        label += f"（{owner}"
+                        if ctx:
+                            label += f", ctx={ctx // 1024}K"
+                        label += "）"
+                    groq_models.append({"id": mid, "label": label})
+                groq_models.sort(key=lambda x: x["id"])
+            except Exception as e:
+                groq_error = f"Groq API 錯誤：{e}"
+        else:
+            groq_error = "未設定 GROQ_API_KEY"
+
+        # ── Gemini（從 Google API 取得可用模型）──
+        if _gemini_key:
+            try:
+                r = await client.get(
+                    f"https://generativelanguage.googleapis.com/v1beta/models?key={_gemini_key}",
+                )
+                r.raise_for_status()
+                for m in r.json().get("models", []):
+                    mid = m.get("name", "").replace("models/", "")
+                    if not any(mid.startswith(p) for p in _GEMINI_TEXT_PREFIXES):
+                        continue
+                    if any(kw in mid for kw in _GEMINI_EXCLUDE_KEYWORDS):
+                        continue
+                    display = m.get("displayName", mid)
+                    supports_thinking = any(mid.startswith(p) for p in _GEMINI_THINKING_PREFIXES)
+                    label = display
+                    if supports_thinking:
+                        label += "（支援思考）"
+                    gemini_models.append({
+                        "id": mid,
+                        "label": label,
+                        "supports_thinking": supports_thinking,
+                    })
+                gemini_models.sort(key=lambda x: x["id"])
+            except Exception as e:
+                gemini_error = f"Gemini API 錯誤：{e}"
+        else:
+            gemini_error = "未設定 GEMINI_API_KEY"
+
+        # ── OpenRouter（免費模型）──
+        try:
+            r = await client.get("https://openrouter.ai/api/v1/models")
             r.raise_for_status()
-            data = r.json()
-            for m in data.get("models", []):
+            for m in r.json().get("data", []):
+                pricing = m.get("pricing", {})
+                if str(pricing.get("prompt", "1")) != "0" or str(pricing.get("completion", "1")) != "0":
+                    continue
+                mid = m.get("id", "")
+                ctx = m.get("context_length", 0)
+                name = m.get("name", mid)
+                label = name
+                if ctx:
+                    label += f"（ctx={ctx // 1024}K）"
+                openrouter_models.append({
+                    "id": mid,
+                    "label": label,
+                    "context_length": ctx,
+                })
+            openrouter_models.sort(key=lambda x: x["id"])
+        except Exception as e:
+            openrouter_error = f"OpenRouter API 錯誤：{e}"
+
+        # ── Ollama ──
+        try:
+            r = await client.get(f"{base_url.rstrip('/')}/api/tags", timeout=3.0)
+            r.raise_for_status()
+            for m in r.json().get("models", []):
                 name = m.get("name") or m.get("model")
                 if not name:
                     continue
@@ -128,12 +213,16 @@ async def get_available_models():
                     "id": name,
                     "label": f"{name}" + (f"（{size_gb}）" if size_gb else ""),
                 })
-    except Exception as e:
-        ollama_error = f"無法連線 Ollama（{base_url}）：{e}"
+        except Exception as e:
+            ollama_error = f"無法連線 Ollama（{base_url}）：{e}"
 
     return {
-        "groq": _GROQ_MODEL_PRESETS,
-        "gemini": _GEMINI_MODEL_PRESETS,
+        "groq": groq_models,
+        "groq_error": groq_error,
+        "gemini": gemini_models,
+        "gemini_error": gemini_error,
+        "openrouter": openrouter_models,
+        "openrouter_error": openrouter_error,
         "ollama": ollama_models,
         "ollama_base_url": base_url,
         "ollama_error": ollama_error,

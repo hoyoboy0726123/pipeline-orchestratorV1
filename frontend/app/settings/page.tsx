@@ -377,11 +377,13 @@ function NotificationSection() {
 export default function SettingsPage() {
   const [current, setCurrent] = useState<ModelSettings | null>(null)
   const [available, setAvailable] = useState<AvailableModels | null>(null)
-  const [provider, setProvider] = useState<'groq' | 'ollama' | 'gemini'>('groq')
+  const [provider, setProvider] = useState<'groq' | 'ollama' | 'gemini' | 'openrouter'>('groq')
   const [model, setModel] = useState('')
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434')
   const [thinking, setThinking] = useState<'auto' | 'on' | 'off'>('off')
   const [numCtx, setNumCtx] = useState<number>(16384)
+  const [geminiThinking, setGeminiThinking] = useState<'off' | 'auto' | 'low' | 'medium' | 'high'>('off')
+  const [orThinking, setOrThinking] = useState<'off' | 'on'>('off')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -396,6 +398,8 @@ export default function SettingsPage() {
       setOllamaUrl(cur.ollama_base_url || 'http://localhost:11434')
       setThinking(cur.ollama_thinking || 'off')
       setNumCtx(cur.ollama_num_ctx || 16384)
+      setGeminiThinking(cur.gemini_thinking || 'off')
+      setOrThinking(cur.openrouter_thinking || 'off')
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -412,7 +416,11 @@ export default function SettingsPage() {
     }
     setSaving(true)
     try {
-      const saved = await saveModelSettings({ provider, model, ollama_base_url: ollamaUrl, ollama_thinking: thinking, ollama_num_ctx: numCtx })
+      const saved = await saveModelSettings({
+        provider, model,
+        ollama_base_url: ollamaUrl, ollama_thinking: thinking, ollama_num_ctx: numCtx,
+        gemini_thinking: geminiThinking, openrouter_thinking: orThinking,
+      })
       setCurrent(saved)
       toast.success(`已儲存：${saved.provider} / ${saved.model}`)
     } catch (e) {
@@ -426,13 +434,21 @@ export default function SettingsPage() {
     ? (available?.groq ?? [])
     : provider === 'gemini'
     ? (available?.gemini ?? [])
+    : provider === 'openrouter'
+    ? (available?.openrouter ?? [])
     : (available?.ollama ?? [])
+  const providerError = provider === 'groq' ? available?.groq_error
+    : provider === 'gemini' ? available?.gemini_error
+    : provider === 'openrouter' ? available?.openrouter_error
+    : available?.ollama_error
   const dirty = current && (
     provider !== current.provider ||
     model !== current.model ||
     ollamaUrl !== current.ollama_base_url ||
     thinking !== current.ollama_thinking ||
-    numCtx !== current.ollama_num_ctx
+    numCtx !== current.ollama_num_ctx ||
+    geminiThinking !== (current.gemini_thinking || 'off') ||
+    orThinking !== (current.openrouter_thinking || 'off')
   )
 
   return (
@@ -480,52 +496,37 @@ export default function SettingsPage() {
             {/* Provider 選擇 */}
             <div className="p-6 border-b border-gray-100">
               <label className="block text-sm font-medium text-gray-700 mb-3">提供者</label>
-              <div className="grid grid-cols-3 gap-3">
-                <button
-                  onClick={() => { setProvider('groq'); setModel(available?.groq?.[0]?.id ?? '') }}
-                  className={cn(
-                    'flex items-center gap-3 p-4 rounded-lg border-2 transition-all text-left',
-                    provider === 'groq'
-                      ? 'border-brand-600 bg-brand-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                  )}
-                >
-                  <Cloud className={cn('w-5 h-5 shrink-0', provider === 'groq' ? 'text-brand-700' : 'text-gray-400')} />
-                  <div className="min-w-0">
-                    <div className="font-medium text-sm text-gray-900">Groq Cloud</div>
-                    <div className="text-xs text-gray-500">雲端 API，速度快</div>
-                  </div>
-                </button>
-                <button
-                  onClick={() => { setProvider('gemini'); setModel(available?.gemini?.[0]?.id ?? 'gemma-4-31b-it') }}
-                  className={cn(
-                    'flex items-center gap-3 p-4 rounded-lg border-2 transition-all text-left',
-                    provider === 'gemini'
-                      ? 'border-brand-600 bg-brand-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                  )}
-                >
-                  <Sparkles className={cn('w-5 h-5 shrink-0', provider === 'gemini' ? 'text-brand-700' : 'text-gray-400')} />
-                  <div className="min-w-0">
-                    <div className="font-medium text-sm text-gray-900">Google Gemini</div>
-                    <div className="text-xs text-gray-500">固定 gemma-4-31b-it</div>
-                  </div>
-                </button>
-                <button
-                  onClick={() => { setProvider('ollama'); setModel(available?.ollama?.[0]?.id ?? '') }}
-                  className={cn(
-                    'flex items-center gap-3 p-4 rounded-lg border-2 transition-all text-left',
-                    provider === 'ollama'
-                      ? 'border-brand-600 bg-brand-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                  )}
-                >
-                  <HardDrive className={cn('w-5 h-5 shrink-0', provider === 'ollama' ? 'text-brand-700' : 'text-gray-400')} />
-                  <div className="min-w-0">
-                    <div className="font-medium text-sm text-gray-900">Ollama 本地</div>
-                    <div className="text-xs text-gray-500">離線運行，無配額</div>
-                  </div>
-                </button>
+              <div className="grid grid-cols-2 gap-3">
+                {([
+                  { v: 'groq' as const, icon: Cloud, name: 'Groq Cloud', desc: '雲端 API，速度快', fallbackModel: '' },
+                  { v: 'gemini' as const, icon: Sparkles, name: 'Google Gemini', desc: '支援思考模式', fallbackModel: 'gemma-4-31b-it' },
+                  { v: 'openrouter' as const, icon: Cloud, name: 'OpenRouter', desc: '免費模型，多供應商', fallbackModel: '' },
+                  { v: 'ollama' as const, icon: HardDrive, name: 'Ollama 本地', desc: '離線運行，無配額', fallbackModel: '' },
+                ]).map(p => (
+                  <button
+                    key={p.v}
+                    onClick={() => {
+                      setProvider(p.v)
+                      const list = p.v === 'groq' ? available?.groq
+                        : p.v === 'gemini' ? available?.gemini
+                        : p.v === 'openrouter' ? available?.openrouter
+                        : available?.ollama
+                      setModel(list?.[0]?.id ?? p.fallbackModel)
+                    }}
+                    className={cn(
+                      'flex items-center gap-3 p-4 rounded-lg border-2 transition-all text-left',
+                      provider === p.v
+                        ? 'border-brand-600 bg-brand-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                    )}
+                  >
+                    <p.icon className={cn('w-5 h-5 shrink-0', provider === p.v ? 'text-brand-700' : 'text-gray-400')} />
+                    <div className="min-w-0">
+                      <div className="font-medium text-sm text-gray-900">{p.name}</div>
+                      <div className="text-xs text-gray-500">{p.desc}</div>
+                    </div>
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -549,16 +550,18 @@ export default function SettingsPage() {
                     重新讀取
                   </button>
                 </div>
-                {available?.ollama_error && (
-                  <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>{available.ollama_error}</span>
-                  </div>
-                )}
               </div>
             )}
 
-            {/* 思考模式（僅 Ollama）*/}
+            {/* Provider 錯誤提示 */}
+            {providerError && (
+              <div className="mx-6 mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{providerError}</span>
+              </div>
+            )}
+
+            {/* 思考模式 — Ollama */}
             {provider === 'ollama' && (
               <div className="p-6 border-b border-gray-100">
                 <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
@@ -578,6 +581,75 @@ export default function SettingsPage() {
                       className={cn(
                         'p-3 rounded-lg border-2 transition-all text-left',
                         thinking === opt.v
+                          ? 'border-brand-600 bg-brand-50'
+                          : 'border-gray-200 hover:border-gray-300'
+                      )}
+                    >
+                      <div className="text-sm font-medium text-gray-900">{opt.label}</div>
+                      <div className="text-xs text-gray-500 mt-0.5">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 思考模式 — Gemini */}
+            {provider === 'gemini' && (
+              <div className="p-6 border-b border-gray-100">
+                <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
+                  <Brain className="w-4 h-4" />
+                  思考模式
+                </label>
+                <p className="text-xs text-gray-500 mb-3">
+                  Gemini 2.5+ / 3.x 支援思考模式，會在回答前先進行推理。選擇不支援的模型時自動忽略此設定。
+                </p>
+                <div className="grid grid-cols-5 gap-2">
+                  {([
+                    { v: 'off',    label: '關閉',   desc: '不思考' },
+                    { v: 'auto',   label: '自動',   desc: '模型決定' },
+                    { v: 'low',    label: '低',     desc: '快速' },
+                    { v: 'medium', label: '中等',   desc: '均衡' },
+                    { v: 'high',   label: '高',     desc: '最深入' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.v}
+                      onClick={() => setGeminiThinking(opt.v)}
+                      className={cn(
+                        'p-3 rounded-lg border-2 transition-all text-left',
+                        geminiThinking === opt.v
+                          ? 'border-brand-600 bg-brand-50'
+                          : 'border-gray-200 hover:border-gray-300'
+                      )}
+                    >
+                      <div className="text-sm font-medium text-gray-900">{opt.label}</div>
+                      <div className="text-xs text-gray-500 mt-0.5">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 思考模式 — OpenRouter */}
+            {provider === 'openrouter' && (
+              <div className="p-6 border-b border-gray-100">
+                <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
+                  <Brain className="w-4 h-4" />
+                  思考模式
+                </label>
+                <p className="text-xs text-gray-500 mb-3">
+                  DeepSeek R1 等推理模型會在回答前輸出思考過程。選擇不支援思考的模型時自動以普通模式運行。
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    { v: 'off', label: '關閉思考', desc: '普通輸出' },
+                    { v: 'on',  label: '開啟思考', desc: '推理模型會先思考' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.v}
+                      onClick={() => setOrThinking(opt.v)}
+                      className={cn(
+                        'p-3 rounded-lg border-2 transition-all text-left',
+                        orThinking === opt.v
                           ? 'border-brand-600 bg-brand-50'
                           : 'border-gray-200 hover:border-gray-300'
                       )}
@@ -632,6 +704,9 @@ export default function SettingsPage() {
               <label className="block text-sm font-medium text-gray-700 mb-3">
                 模型
                 {provider === 'ollama' && <span className="text-xs text-gray-400 ml-2">（讀取自 ollama list）</span>}
+                {provider === 'groq' && <span className="text-xs text-gray-400 ml-2">（從 Groq API 動態取得）</span>}
+                {provider === 'gemini' && <span className="text-xs text-gray-400 ml-2">（從 Google API 動態取得）</span>}
+                {provider === 'openrouter' && <span className="text-xs text-gray-400 ml-2">（僅列出免費模型）</span>}
               </label>
               {options.length === 0 ? (
                 <div className="p-4 bg-gray-50 rounded-lg text-sm text-gray-500 text-center">
@@ -702,7 +777,8 @@ export default function SettingsPage() {
         <div className="mt-4 text-xs text-gray-500 space-y-1">
           <p>• 設定會立即生效（新 pipeline 執行會使用新模型）</p>
           <p>• 設定儲存在 <code className="font-mono bg-gray-100 px-1.5 py-0.5 rounded">~/ai_output/pipeline_settings.json</code></p>
-          <p>• Ollama 模型列表從本機 <code className="font-mono bg-gray-100 px-1.5 py-0.5 rounded">ollama list</code> 動態讀取</p>
+          <p>• 模型列表從各 API 動態取得，OpenRouter 僅顯示免費模型</p>
+          <p>• OpenRouter API Key 請在 <code className="font-mono bg-gray-100 px-1.5 py-0.5 rounded">backend/.env</code> 設定 OPENROUTER_API_KEY（免費模型不需要 key 也可列出清單）</p>
         </div>
       </div>
     </div>

@@ -252,21 +252,29 @@ export async function deletePipelineSchedule(taskId: string): Promise<void> {
 
 // ── Settings ─────────────────────────────────────────────────
 export interface ModelSettings {
-  provider: 'groq' | 'ollama' | 'gemini'
+  provider: 'groq' | 'ollama' | 'gemini' | 'openrouter'
   model: string
   ollama_base_url: string
   ollama_thinking: 'auto' | 'on' | 'off'
   ollama_num_ctx: number
+  gemini_thinking: 'off' | 'auto' | 'low' | 'medium' | 'high'
+  openrouter_thinking: 'off' | 'on'
 }
 
 export interface ModelOption {
   id: string
   label: string
+  supports_thinking?: boolean
+  context_length?: number
 }
 
 export interface AvailableModels {
   groq: ModelOption[]
+  groq_error: string | null
   gemini: ModelOption[]
+  gemini_error: string | null
+  openrouter: ModelOption[]
+  openrouter_error: string | null
   ollama: ModelOption[]
   ollama_base_url: string
   ollama_error: string | null
@@ -354,7 +362,10 @@ export async function createWorkflowApi(name: string = '新工作流', canvas?: 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, canvas, validate }),
   })
-  if (!res.ok) throw new Error('建立工作流失敗')
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`建立工作流失敗 (${res.status}): ${detail}`)
+  }
   return res.json()
 }
 

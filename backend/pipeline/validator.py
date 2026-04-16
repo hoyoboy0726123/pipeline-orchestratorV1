@@ -764,7 +764,7 @@ Exit Code：{exit_code}
 
             from llm_factory import invoke_with_streaming
             reply = (await invoke_with_streaming(
-                llm, messages, label=f"validator:{step_name}", timeout=600.0, logger=logger
+                llm, messages, label=f"validator:{step_name}", timeout=180.0, logger=logger
             )).strip()
             logger.debug(f"[{step_name}] Agent 回覆：{reply[:200]}...")
 
