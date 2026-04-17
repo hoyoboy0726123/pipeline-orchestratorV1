@@ -15,3 +15,5 @@ httpx[http2]
 newspaper3k
 yfinance
 selenium
+mss
+pywin32

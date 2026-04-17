@@ -1,8 +1,8 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { X, FolderOpen, ChevronDown, ChevronUp } from 'lucide-react'
+import { X, FolderOpen, ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
 import type { SkillData, SkillNode } from './_helpers'
-import { fsBrowse } from '@/lib/api'
+import { fsBrowse, listAvailableSkills, type AvailableSkill } from '@/lib/api'
 import { toast } from 'sonner'
 import { useRunStatusStore } from './_runStatus'
 
@@ -88,6 +88,26 @@ export default function SkillConfigPanel({ node, onUpdate, onClose, onDelete }: 
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [browserTarget, setBrowserTarget] = useState<'output' | 'workingDir' | null>(null)
   const hasRecipe = useRunStatusStore(s => s.recipeSteps[data.name])
+  const [skills, setSkills] = useState<AvailableSkill[]>([])
+  const [skillsLoading, setSkillsLoading] = useState(false)
+  const [skillsError, setSkillsError] = useState('')
+
+  useEffect(() => {
+    setSkillsLoading(true)
+    listAvailableSkills()
+      .then(r => {
+        setSkills(r.skills || [])
+        if (!r.exists) {
+          setSkillsError(`找不到 skill 目錄：${r.skills_root}（使用 npx skills add 安裝）`)
+        } else if ((r.skills || []).length === 0) {
+          setSkillsError('目錄存在但沒有任何 skill')
+        }
+      })
+      .catch(e => setSkillsError(e?.message || '載入失敗'))
+      .finally(() => setSkillsLoading(false))
+  }, [])
+
+  const selectedSkill = skills.find(s => s.display_name === data.skill || s.name === data.skill)
 
   const inputCls = 'w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400/20 bg-white'
 
@@ -139,6 +159,57 @@ export default function SkillConfigPanel({ node, onUpdate, onClose, onDelete }: 
               className={`${inputCls} resize-none font-mono text-xs leading-relaxed`}
             />
             <p className="text-xs text-gray-400 mt-1.5">AI 會根據描述自動撰寫 Python 程式碼並執行</p>
+          </div>
+
+          {/* Claude Code Skill mount */}
+          <div>
+            <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1.5 flex items-center gap-1">
+              <Sparkles className="w-3 h-3" />
+              掛載 Skill <span className="text-gray-300 font-normal normal-case">（選填）</span>
+            </label>
+            <select
+              value={data.skill || ''}
+              onChange={e => onUpdate({ skill: e.target.value })}
+              disabled={skillsLoading}
+              className={`${inputCls} font-mono disabled:opacity-50`}
+            >
+              <option value="">（不掛載）</option>
+              {skills.map(s => (
+                <option key={s.display_name} value={s.display_name}>
+                  {s.display_name}
+                </option>
+              ))}
+            </select>
+            {skillsLoading && <p className="text-xs text-gray-400 mt-1">載入中…</p>}
+            {!skillsLoading && skillsError && <p className="text-xs text-amber-500 mt-1">{skillsError}</p>}
+            {selectedSkill && (
+              <div className="mt-2 p-2.5 rounded-lg bg-purple-50 border border-purple-100 text-xs">
+                <div className="font-medium text-purple-700 mb-1">{selectedSkill.name}</div>
+                {selectedSkill.description && (
+                  <div className="h-20 overflow-y-auto pr-1 mb-1.5 text-gray-600 leading-relaxed">
+                    {selectedSkill.description}
+                  </div>
+                )}
+                <div className="flex gap-2 text-[11px] text-gray-400">
+                  {selectedSkill.has_scripts && <span>📜 scripts</span>}
+                  {selectedSkill.has_references && <span>📖 references</span>}
+                  {selectedSkill.has_assets && <span>🎨 assets</span>}
+                </div>
+              </div>
+            )}
+            {data.skill && (
+              <div className="mt-2 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-xs leading-relaxed">
+                <div className="font-medium text-amber-800 mb-1">⚠️ 模型能力提醒</div>
+                <p className="text-amber-700">
+                  Skill 功能需要模型有足夠推理能力才能正確理解 SKILL.md 與使用子資源腳本。建議：
+                </p>
+                <ul className="text-amber-700 mt-1 ml-3 list-disc space-y-0.5">
+                  <li><b>Groq / Gemini / OpenRouter</b>：使用各家旗艦或大型模型（非輕量版）</li>
+                  <li><b>Ollama</b>：避免使用 8B 以下小模型（能力不足會忽略 skill 指示）</li>
+                </ul>
+                <p className="text-amber-700 mt-1">若結果不如預期，切換更強的模型並以「完整模式」重跑覆蓋 recipe。</p>
+              </div>
+            )}
           </div>
 
           {/* Output path */}

@@ -167,3 +167,79 @@ def remove_package(pkg_name: str) -> tuple[bool, str]:
     # 更新清單
     _write_packages(new_packages)
     return True, f"✅ {pkg_name} 已從清單移除並解除安裝"
+
+
+# ── venv 同步：找出已裝但不在清單中的套件 ────────────────────────────────────
+def _base_name(pkg: str) -> str:
+    """取得套件基礎名（去除 extras 與版本號）"""
+    return pkg.split("[")[0].split("=")[0].split(">")[0].split("<")[0].strip().lower()
+
+
+_BOOTSTRAP_EXCLUDES = {"pip", "setuptools", "wheel"}
+
+
+def scan_unlisted_packages() -> list[dict]:
+    """
+    掃 venv 中**已安裝但不在 skill_packages.txt 也不在 requirements.txt** 的套件。
+    只列出頂層套件（非其他套件的依賴），避免列出一堆傳遞依賴。
+
+    回傳 list[{name, version}]。
+    """
+    # 1. 讀出 skill_packages.txt 和 requirements.txt 的 base names
+    skill_bases = {_base_name(p) for p in _read_packages()}
+
+    req_file = Path(__file__).parent / "requirements.txt"
+    req_bases: set[str] = set()
+    if req_file.exists():
+        for line in req_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                req_bases.add(_base_name(line))
+
+    # 2. 用 pip list --not-required 取得頂層套件
+    import json as _json
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "list", "--not-required", "--format=json"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return []
+        installed = _json.loads(r.stdout)
+    except Exception:
+        return []
+
+    # 3. 過濾：排除 bootstrap、已在 skill 清單、已在 requirements
+    unlisted = []
+    for pkg in installed:
+        name = pkg.get("name", "")
+        if not name:
+            continue
+        base = name.lower()
+        if base in _BOOTSTRAP_EXCLUDES:
+            continue
+        if base in skill_bases:
+            continue
+        if base in req_bases:
+            continue
+        unlisted.append({"name": name, "version": pkg.get("version", "")})
+    unlisted.sort(key=lambda x: x["name"].lower())
+    return unlisted
+
+
+def add_to_list_only(pkg_name: str) -> tuple[bool, str]:
+    """
+    只把套件名加到 skill_packages.txt，不再跑 pip install
+    （用於已手動安裝、只需納管的情境）。
+    """
+    pkg_name = pkg_name.strip()
+    if not pkg_name:
+        return False, "套件名稱不能為空"
+    packages = _read_packages()
+    base = _base_name(pkg_name)
+    for p in packages:
+        if _base_name(p) == base:
+            return False, f"{pkg_name} 已在清單中"
+    packages.append(pkg_name)
+    _write_packages(packages)
+    return True, f"✅ {pkg_name} 已加入 skill_packages.txt"

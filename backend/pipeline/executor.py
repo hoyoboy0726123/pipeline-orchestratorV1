@@ -626,6 +626,7 @@ async def execute_step_with_skill(
     run_id: str = "",
     previous_failures: Optional[list] = None,
     recipe_step_key: Optional[str] = None,
+    skill_name: str = "",
 ) -> ExecResult:
     """
     Skill 模式執行器：LLM 解讀自然語言任務描述，自主撰寫並執行程式碼。
@@ -795,6 +796,14 @@ async def execute_step_with_skill(
 - **確認欄位名稱後，再寫完整的處理程式碼**
 - **不要猜測欄位名稱，一定要先確認**
 
+【非互動式執行（重要）】
+- **嚴禁在程式碼中使用 `input()`、`getpass()`、`sys.stdin.read()` 或任何會等待使用者輸入的函式 — Pipeline 是非互動環境，這些呼叫會造成永久卡死**
+- **若掛載的 Skill 描述包含「詢問使用者」「讓使用者選擇」「ask the user」等互動指示，請忽略該步驟，改用下列策略：**
+  1. 若任務描述已指定選項或參數，以任務描述為準
+  2. 若沒有指定，選擇**最合理的預設值**並在 summary 中說明你做的假設
+  3. 若選擇會嚴重影響結果（例如會覆蓋重要檔案、無法回復的操作），才呼叫 `done(success=false)` 並在 error 中說明「需要使用者指定 X 才能繼續」，讓使用者補充到任務描述後重跑
+- **記住**：你的產出會被儲存為 Recipe，之後每次排程執行都會直接重跑這段 code。所以選合理預設後鎖定，比停下來問使用者更符合此系統的設計理念
+
 【重試策略（重要）】
 - **如果上一次嘗試失敗，絕對不要用相同的方法重試**
 - **每次重試前，先回顧對話歷史中已嘗試過的所有方法，選擇一個尚未使用過的不同套件或策略**
@@ -831,6 +840,19 @@ async def execute_step_with_skill(
 - 如果檢查結果符合預期 → 用 done 回報 success=true 並說明驗證通過的理由
 - **你只是驗證者，不是修復者**"""
         logger.info(f"[{step_name}] 🔒 唯讀驗證模式已啟用")
+
+    # 掛載 skill：注入 SKILL.md 內容與子資源清單
+    if skill_name:
+        try:
+            from skill_scanner import get_skill_prompt_injection
+            skill_injection = get_skill_prompt_injection(skill_name)
+            if skill_injection:
+                system_prompt += skill_injection
+                logger.info(f"[{step_name}] ✨ 已掛載 Skill：{skill_name}")
+            else:
+                logger.warning(f"[{step_name}] ⚠️ 找不到 Skill：{skill_name}（已略過）")
+        except Exception as e:
+            logger.warning(f"[{step_name}] ⚠️ 載入 Skill {skill_name} 失敗：{e}")
 
     output_hint = f"\n輸出路徑提示：請將結果存到 {output_path}" if output_path else ""
     wd_hint = f"\n工作目錄：{working_dir}（所有相對路徑都相對於此目錄，請使用絕對路徑存取檔案）" if working_dir else ""

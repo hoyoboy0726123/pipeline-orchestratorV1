@@ -101,8 +101,8 @@ def _decision_keyboard(run_id: str) -> InlineKeyboardMarkup:
     ])
 
 
-def _confirm_keyboard(run_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def _confirm_keyboard(run_id: str, screenshot: bool = False) -> InlineKeyboardMarkup:
+    rows = [
         [
             InlineKeyboardButton("✅ 繼續執行", callback_data=f"pipe_continue:{run_id}"),
             InlineKeyboardButton("💬 補充指示", callback_data=f"pipe_hint:{run_id}"),
@@ -111,7 +111,12 @@ def _confirm_keyboard(run_id: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("📋 查看 Log", callback_data=f"pipe_log:{run_id}"),
             InlineKeyboardButton("🛑 中止", callback_data=f"pipe_abort:{run_id}"),
         ],
-    ])
+    ]
+    if screenshot:
+        rows.insert(1, [
+            InlineKeyboardButton("📸 截圖", callback_data=f"pipe_screenshot:{run_id}"),
+        ])
+    return InlineKeyboardMarkup(rows)
 
 
 def _is_valid_tg_token(token: str) -> bool:
@@ -182,6 +187,29 @@ async def _tg_send(chat_id: int, text: str, reply_markup=None):
         logger.info(f"[Telegram] ✅ 發送成功")
     except Exception as e:
         logger.error(f"[Telegram] ❌ 發送失敗：{e}")
+
+
+def take_screenshot(pipeline_name: str, step_name: str) -> Optional[str]:
+    """截取螢幕畫面，儲存到工作流資料夾，回傳檔案路徑。"""
+    import time as _t
+    from pathlib import Path as _P
+    logger = logging.getLogger("pipeline")
+    try:
+        import mss as _mss
+        _PROJ_ROOT = _P(__file__).parent.parent.parent.absolute()
+        ss_dir = _PROJ_ROOT / "ai_output" / pipeline_name
+        ss_dir.mkdir(parents=True, exist_ok=True)
+        ss_name = f"screenshot_{step_name}_{_t.strftime('%Y%m%d_%H%M%S')}.png"
+        ss_path = ss_dir / ss_name
+        with _mss.mss() as sct:
+            sct.shot(output=str(ss_path))
+        if ss_path.exists():
+            logger.info(f"[{step_name}] 📸 截圖已儲存：{ss_path}")
+            return str(ss_path)
+        logger.warning(f"[{step_name}] 截圖失敗：檔案未產生")
+    except Exception as e:
+        logger.warning(f"[{step_name}] 截圖失敗：{e}")
+    return None
 
 
 async def _notify_failure(run: PipelineRun, val: ValidationResult, step_name: str):
@@ -452,7 +480,8 @@ async def run_pipeline(
                 if prev_summary:
                     tg_text += f"{prev_summary}\n"
                 tg_text += f"💬 {confirm_msg}\n\n請選擇："
-                await _tg_send(run.telegram_chat_id, tg_text, _confirm_keyboard(run.run_id))
+                await _tg_send(run.telegram_chat_id, tg_text,
+                               _confirm_keyboard(run.run_id, screenshot=step.screenshot))
 
             # 記錄此步驟的結果（標記為等待中）
             step_result = StepResult(
@@ -514,6 +543,7 @@ async def run_pipeline(
                     run_id=run.run_id,
                     previous_failures=step_failures if step_failures else None,
                     recipe_step_key=recipe_step_key,
+                    skill_name=step.skill,
                 )
             else:
                 exec_result = await execute_step(

@@ -47,10 +47,12 @@ class PipelineStep(BaseModel):
     output: Optional[StepOutput] = None
     retry: int = 1        # 自動重試次數（超過才問用戶）
     skill_mode: bool = False  # True = batch 為自然語言，由 LLM Skill agent 執行
+    skill: str = ""            # 掛載的 Claude Code skill 名稱（~/.agents/skills/ 下的資料夾名）
     readonly: bool = False  # True = 唯讀驗證模式，禁止修改檔案
     human_confirm: bool = False  # True = 人工確認節點，暫停等待確認
     message: str = ""            # 人工確認時的自訂訊息
     notify_telegram: bool = True  # 人工確認時是否發 Telegram
+    screenshot: bool = False     # True = 暫停前自動截圖，附帶到 Telegram
 
 
 class PipelineConfig(BaseModel):

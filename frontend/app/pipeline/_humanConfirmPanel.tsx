@@ -72,6 +72,28 @@ export default function HumanConfirmPanel({ node, onUpdate, onClose, onDelete }:
           </button>
         </div>
 
+        {/* Screenshot toggle */}
+        <div className="flex items-center justify-between p-3 rounded-xl border border-gray-200 bg-gray-50/50">
+          <div className="flex-1 min-w-0 mr-3">
+            <div className="text-sm font-medium text-gray-700">📸 自動截圖</div>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {data.screenshot
+                ? '已啟用：暫停前自動截取螢幕畫面，附帶到 Telegram 通知'
+                : '已關閉：不截取螢幕畫面'}
+            </p>
+          </div>
+          <button
+            onClick={() => onUpdate({ screenshot: !data.screenshot })}
+            className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
+              data.screenshot ? 'bg-emerald-500' : 'bg-gray-300'
+            }`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+              data.screenshot ? 'translate-x-5' : 'translate-x-0'
+            }`} />
+          </button>
+        </div>
+
         {/* Timeout */}
         <div>
           <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide block mb-1.5">等待超時</label>

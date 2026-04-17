@@ -128,6 +128,43 @@ async def _poll_loop():
                         await cb.answer(f"❌ {str(e)[:150]}")
                     continue
 
+                # ── 截圖 ──
+                if action == "screenshot":
+                    logger.info(f"Telegram: 截圖 for run {run_id}")
+                    try:
+                        from pipeline.store import get_store
+                        from pipeline.runner import take_screenshot
+                        store = get_store()
+                        run = store.load(run_id)
+                        if not run:
+                            await cb.answer("❌ 找不到此 run")
+                            continue
+                        # 取得目前步驟名稱
+                        steps = run.config_dict.get("steps", [])
+                        step_idx = run.current_step
+                        step_name = steps[step_idx]["name"] if step_idx < len(steps) else "unknown"
+                        await cb.answer("📸 正在截圖…")
+                        ss_path = take_screenshot(run.pipeline_name, step_name)
+                        if ss_path:
+                            with open(ss_path, "rb") as photo:
+                                await _bot_instance.send_photo(
+                                    chat_id=cb.message.chat_id,
+                                    photo=photo,
+                                    caption=f"📸 截圖 — {run.pipeline_name} / {step_name}",
+                                )
+                        else:
+                            await _bot_instance.send_message(
+                                chat_id=cb.message.chat_id,
+                                text="❌ 截圖失敗，請確認後端主機是否有螢幕",
+                            )
+                    except Exception as e:
+                        logger.error(f"Screenshot failed: {e}")
+                        try:
+                            await cb.answer(f"❌ {str(e)[:150]}")
+                        except Exception:
+                            pass
+                    continue
+
                 # ── 補充指示：設定等待狀態 ──
                 if action == "hint":
                     logger.info(f"Telegram: 等待補充指示 for run {run_id}")

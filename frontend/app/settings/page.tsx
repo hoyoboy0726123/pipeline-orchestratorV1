@@ -9,10 +9,190 @@ import {
   getSkillPackages, addSkillPackage, removeSkillPackage,
   getNotificationSettings, saveNotificationSettings,
   analyzeRecentLogs,
+  listAvailableSkills, scanSkillDependencies,
+  scanUnlistedPackages, adoptExistingPackage,
   type ModelSettings, type AvailableModels, type SkillPackage, type NotificationSettings,
-  type LogSuggestion,
+  type LogSuggestion, type AvailableSkill, type SkillDependencies,
+  type UnlistedPackage,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
+
+// ── Claude Code Skills Section ────────────────────────────────────────────────
+function InstalledSkillsSection({ onInstallRequest }: { onInstallRequest: (pkg: string) => Promise<void> }) {
+  const [skills, setSkills] = useState<AvailableSkill[]>([])
+  const [skillsRoot, setSkillsRoot] = useState('')
+  const [rootExists, setRootExists] = useState(true)
+  const [loading, setLoading] = useState(true)
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [depsCache, setDepsCache] = useState<Record<string, SkillDependencies>>({})
+  const [scanning, setScanning] = useState<string | null>(null)
+
+  const loadSkills = async () => {
+    setLoading(true)
+    try {
+      const r = await listAvailableSkills()
+      setSkills(r.skills || [])
+      setSkillsRoot(r.skills_root)
+      setRootExists(r.exists)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { loadSkills() }, [])
+
+  const handleToggleExpand = async (displayName: string) => {
+    if (expanded === displayName) {
+      setExpanded(null)
+      return
+    }
+    setExpanded(displayName)
+    if (!depsCache[displayName]) {
+      setScanning(displayName)
+      try {
+        const deps = await scanSkillDependencies(displayName)
+        setDepsCache(prev => ({ ...prev, [displayName]: deps }))
+      } catch (e) {
+        toast.error((e as Error).message)
+      } finally {
+        setScanning(null)
+      }
+    }
+  }
+
+  return (
+    <div className="mt-8">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="w-10 h-10 rounded-xl bg-purple-100 flex items-center justify-center">
+          <Sparkles className="w-5 h-5 text-purple-700" />
+        </div>
+        <div className="flex-1">
+          <h2 className="text-lg font-semibold text-gray-900">Agent Skills</h2>
+          <p className="text-sm text-gray-500">已識別的 Skill 清單（來自 <code className="font-mono text-xs bg-gray-100 px-1 rounded">{skillsRoot}</code>）</p>
+        </div>
+        <button onClick={loadSkills} disabled={loading}
+          className="p-2 text-gray-400 hover:text-purple-600 transition-colors disabled:opacity-50" title="重新掃描">
+          <RefreshCw className={cn('w-4 h-4', loading && 'animate-spin')} />
+        </button>
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        {loading ? (
+          <div className="p-6 text-center text-gray-400 text-sm">
+            <RefreshCw className="w-4 h-4 animate-spin inline-block mr-2" />載入中...
+          </div>
+        ) : !rootExists ? (
+          <div className="p-6 text-center text-gray-400 text-sm">
+            <p>Skill 目錄不存在</p>
+            <p className="mt-1 text-xs">用 <code className="font-mono bg-gray-100 px-1 py-0.5 rounded">npx skills add anthropics/skills</code> 安裝</p>
+          </div>
+        ) : skills.length === 0 ? (
+          <div className="p-6 text-center text-gray-400 text-sm">目錄存在但沒有任何 Skill</div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {skills.map(s => {
+              const deps = depsCache[s.display_name]
+              const isExpanded = expanded === s.display_name
+              const isScanning = scanning === s.display_name
+              return (
+                <div key={s.display_name} className="transition-colors">
+                  <button onClick={() => handleToggleExpand(s.display_name)}
+                    className="w-full flex items-start gap-3 px-4 py-3 hover:bg-gray-50 text-left">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-mono font-medium text-gray-900">{s.display_name}</span>
+                        {s.has_scripts && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600">scripts</span>}
+                        {s.has_references && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-50 text-green-600">refs</span>}
+                        {s.has_assets && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600">assets</span>}
+                        {s.has_package_json && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-50 text-red-600">npm</span>}
+                        {s.has_requirements && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600">requirements.txt</span>}
+                      </div>
+                      {s.description && <p className="text-xs text-gray-500 mt-1 line-clamp-2">{s.description}</p>}
+                    </div>
+                    <span className="text-xs text-gray-400 shrink-0 mt-0.5">{isExpanded ? '收合 ▲' : '依賴 ▼'}</span>
+                  </button>
+
+                  {isExpanded && (
+                    <div className="px-4 pb-3 bg-gray-50 border-t border-gray-100">
+                      {isScanning && <p className="py-3 text-xs text-gray-400"><Loader2 className="w-3 h-3 animate-spin inline mr-1.5" />掃描依賴中…</p>}
+                      {!isScanning && deps && (
+                        <div className="space-y-3 pt-3 text-xs">
+                          {/* Python 依賴 */}
+                          <div>
+                            <div className="font-medium text-gray-700 mb-1.5">🐍 Python 依賴</div>
+                            {deps.python?.requirements_txt && deps.python.requirements_txt.length > 0 && (
+                              <div className="mb-2">
+                                <span className="text-gray-400">requirements.txt：</span>
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  {deps.python.requirements_txt.map(r => (
+                                    <code key={r} className="px-1.5 py-0.5 bg-white border border-gray-200 rounded text-gray-700">{r}</code>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {deps.python?.missing && deps.python.missing.length > 0 ? (
+                              <div>
+                                <span className="text-amber-600">尚未安裝：</span>
+                                <div className="mt-1 flex flex-wrap gap-1.5">
+                                  {deps.python.missing.map(pkg => (
+                                    <div key={pkg} className="flex items-center gap-1 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                                      <code className="text-amber-800">{pkg}</code>
+                                      <button onClick={() => onInstallRequest(pkg)}
+                                        className="text-purple-600 hover:text-purple-800 text-[11px] font-medium ml-1">安裝</button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-gray-400">
+                                {deps.python && deps.python.suggested_pip.length === 0
+                                  ? '無外部依賴（只用標準庫）'
+                                  : '✓ 所有依賴已安裝'}
+                              </p>
+                            )}
+                            {deps.python && deps.python.installed.length > 0 && (
+                              <p className="mt-1 text-green-600">已安裝：{deps.python.installed.join(', ')}</p>
+                            )}
+                          </div>
+
+                          {/* Node 依賴 */}
+                          <div>
+                            <div className="font-medium text-gray-700 mb-1.5">📦 Node.js 依賴</div>
+                            {deps.node?.needs_npm_install && deps.node.package_json ? (
+                              <div className="bg-red-50 border border-red-200 rounded px-2 py-2">
+                                <p className="text-red-700 font-medium mb-1">此 Skill 有 package.json，需要手動執行：</p>
+                                <code className="block bg-white px-2 py-1 rounded text-red-800">cd "{deps.path}" && npm install</code>
+                                {deps.node.package_json.dependencies && (
+                                  <div className="mt-2">
+                                    <span className="text-gray-500">dependencies：</span>
+                                    <div className="mt-0.5 flex flex-wrap gap-1">
+                                      {Object.entries(deps.node.package_json.dependencies).map(([k, v]) => (
+                                        <code key={k} className="px-1.5 py-0.5 bg-white border border-gray-200 rounded text-gray-700">{k}@{v}</code>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <p className="text-gray-400">無 Node.js 依賴</p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 
 // ── Skill Packages Section ────────────────────────────────────────────────────
 function SkillPackagesSection() {
@@ -25,6 +205,9 @@ function SkillPackagesSection() {
   const [suggestions, setSuggestions] = useState<LogSuggestion[]>([])
   const [analyzedCount, setAnalyzedCount] = useState(0)
   const [logCount, setLogCount] = useState(5)
+  const [scanningVenv, setScanningVenv] = useState(false)
+  const [unlisted, setUnlisted] = useState<UnlistedPackage[]>([])
+  const [adopting, setAdopting] = useState<string | null>(null)
 
   const loadPkgs = async () => {
     setLoading(true)
@@ -96,6 +279,47 @@ function SkillPackagesSection() {
     } finally {
       setInstalling(false)
     }
+  }
+
+  const handleScanVenv = async () => {
+    setScanningVenv(true)
+    try {
+      const pkgs = await scanUnlistedPackages()
+      setUnlisted(pkgs)
+      if (pkgs.length === 0) toast.info('venv 已完全同步，無未納管套件')
+      else toast.success(`發現 ${pkgs.length} 個已裝但未納管的套件`)
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setScanningVenv(false)
+    }
+  }
+
+  const handleAdopt = async (name: string) => {
+    setAdopting(name)
+    try {
+      const msg = await adoptExistingPackage(name)
+      toast.success(msg)
+      setUnlisted(prev => prev.filter(p => p.name !== name))
+      await loadPkgs()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setAdopting(null)
+    }
+  }
+
+  const handleAdoptAll = async () => {
+    let ok = 0, fail = 0
+    for (const p of unlisted) {
+      try {
+        await adoptExistingPackage(p.name)
+        ok++
+      } catch { fail++ }
+    }
+    toast.success(`已納管 ${ok} 個套件${fail ? `（${fail} 個失敗）` : ''}`)
+    setUnlisted([])
+    await loadPkgs()
   }
 
   return (
@@ -217,6 +441,49 @@ function SkillPackagesSection() {
                   <button onClick={() => handleInstallSuggestion(s.pip_name)} disabled={installing}
                     className="px-2.5 py-1 bg-purple-600 text-white rounded-lg text-xs font-medium hover:bg-purple-700 disabled:opacity-50 whitespace-nowrap">
                     安裝
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Venv 同步：納管已手動裝但不在清單的套件 */}
+        <div className="p-4 border-t border-gray-100">
+          <div className="flex items-center gap-2 mb-2">
+            <RefreshCw className="w-4 h-4 text-purple-500" />
+            <span className="text-sm font-medium text-gray-700">同步 venv：納管終端機手動安裝的套件</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={handleScanVenv} disabled={scanningVenv}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1.5 transition-all',
+                scanningVenv ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'
+              )}>
+              {scanningVenv ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+              掃描 venv
+            </button>
+            {unlisted.length > 0 && (
+              <button onClick={handleAdoptAll}
+                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700">
+                全部納管（{unlisted.length}）
+              </button>
+            )}
+          </div>
+
+          {unlisted.length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              <p className="text-xs text-gray-500">以下是已安裝但未納管的頂層套件（排除後端 requirements.txt）：</p>
+              {unlisted.map(p => (
+                <div key={p.name} className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                  <Package className="w-4 h-4 text-blue-500 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm font-mono font-medium text-gray-800">{p.name}</span>
+                    {p.version && <span className="text-xs text-gray-400 ml-2">{p.version}</span>}
+                  </div>
+                  <button onClick={() => handleAdopt(p.name)} disabled={adopting === p.name}
+                    className="px-2.5 py-1 bg-purple-600 text-white rounded-lg text-xs font-medium hover:bg-purple-700 disabled:opacity-50 whitespace-nowrap">
+                    {adopting === p.name ? <Loader2 className="w-3 h-3 animate-spin" /> : '納管'}
                   </button>
                 </div>
               ))}
@@ -766,6 +1033,16 @@ export default function SettingsPage() {
             </div>
           </div>
         )}
+
+        {/* Installed Skills (Claude Code skills from ~/.agents/skills/) */}
+        <InstalledSkillsSection onInstallRequest={async (pkg) => {
+          try {
+            const msg = await addSkillPackage(pkg)
+            toast.success(msg)
+          } catch (e) {
+            toast.error((e as Error).message)
+          }
+        }} />
 
         {/* Skill Packages */}
         <SkillPackagesSection />

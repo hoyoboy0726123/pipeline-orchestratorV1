@@ -11,9 +11,11 @@ export interface StepData extends Record<string, unknown> {
   expect: string
   skillMode?: boolean   // optional — 僅在 YAML 序列化時使用，節點類型由 node.type 決定
   readonly?: boolean    // optional — skill 唯讀驗證模式
+  skill?: string        // optional — 掛載的 Claude Code skill 名稱
   humanConfirm?: boolean           // optional — 人工確認步驟
   humanConfirmMessage?: string     // optional — 確認訊息
   humanConfirmNotifyTelegram?: boolean  // optional — 是否 Telegram 通知
+  humanConfirmScreenshot?: boolean     // optional — 是否自動截圖
   timeout: number
   retry: number
   index: number
@@ -29,6 +31,7 @@ export interface SkillData extends Record<string, unknown> {
   outputPath: string
   expectedOutput: string
   readonly: boolean
+  skill: string         // 掛載的 Claude Code skill 名稱（空字串 = 不掛載）
   timeout: number
   retry: number
   index: number
@@ -49,6 +52,7 @@ export interface HumanConfirmData extends Record<string, unknown> {
   name: string
   message: string          // 自訂確認訊息
   notifyTelegram: boolean  // 是否透過 Telegram 通知
+  screenshot: boolean      // 是否自動截圖並傳送到 Telegram
   timeout: number          // 等待超時（秒）
   index: number
   status: 'idle' | 'running' | 'success' | 'failed'
@@ -72,6 +76,7 @@ export function newHumanConfirmData(index = 0): HumanConfirmData {
     name: `人工確認 ${_confirmCounter}`,
     message: '',
     notifyTelegram: true,
+    screenshot: false,
     timeout: 3600,
     index,
     status: 'idle',
@@ -106,6 +111,7 @@ export function newSkillData(index = 0): SkillData {
     outputPath: '',
     expectedOutput: '',
     readonly: false,
+    skill: '',
     timeout: 300,
     retry: 0,
     index,
@@ -130,6 +136,7 @@ export function stepsToFlow(steps: StepData[]): { nodes: AppNode[]; edges: Edge[
           name: s.name,
           message: s.humanConfirmMessage || '',
           notifyTelegram: s.humanConfirmNotifyTelegram ?? true,
+          screenshot: s.humanConfirmScreenshot ?? false,
           timeout: s.timeout || 3600,
           index: i,
           status: 'idle' as const,
@@ -150,6 +157,7 @@ export function stepsToFlow(steps: StepData[]): { nodes: AppNode[]; edges: Edge[
           outputPath: s.outputPath,
           expectedOutput: s.expect,
           readonly: s.readonly || false,
+          skill: s.skill || '',
           timeout: s.timeout,
           retry: s.retry,
           index: i,
@@ -254,6 +262,7 @@ export function flowToSteps(nodes: AppNode[], edges: Edge[]): StepData[] {
         humanConfirm: true,
         humanConfirmMessage: d.message,
         humanConfirmNotifyTelegram: d.notifyTelegram,
+        humanConfirmScreenshot: d.screenshot,
         timeout: d.timeout,
         retry: 0,
         index: i,
@@ -272,6 +281,7 @@ export function flowToSteps(nodes: AppNode[], edges: Edge[]): StepData[] {
         expect: aiData?.expectText || d.expectedOutput,
         skillMode: true,
         readonly: d.readonly || false,
+        skill: d.skill || '',
         timeout: d.timeout,
         retry: d.retry,
         index: i,
@@ -313,6 +323,7 @@ export function stepsToYaml(name: string, steps: StepData[]): string {
       lines.push(`    human_confirm: true`)
       if (s.humanConfirmMessage) lines.push(`    message: "${s.humanConfirmMessage.replace(/"/g, '\\"')}"`)
       if (s.humanConfirmNotifyTelegram === false) lines.push(`    notify_telegram: false`)
+      if (s.humanConfirmScreenshot) lines.push(`    screenshot: true`)
       if (s.timeout && s.timeout !== 3600) lines.push(`    timeout: ${s.timeout}`)
       continue
     }
@@ -328,6 +339,7 @@ export function stepsToYaml(name: string, steps: StepData[]): string {
       }
     }
     if (s.skillMode) lines.push(`    skill_mode: true`)
+    if (s.skill) lines.push(`    skill: ${s.skill}`)
     if (s.readonly) lines.push(`    readonly: true`)
     if (s.outputPath || s.expect) {
       lines.push(`    output:`)
@@ -436,6 +448,8 @@ export function parseYaml(raw: string): { name: string; validate: boolean; steps
         if (/true/.test(t)) validate = true
       } else if (/^skill_mode:/.test(t) && cur) {
         cur.skillMode = /true/.test(t)
+      } else if (/^skill:/.test(t) && cur) {
+        cur.skill = t.replace(/^skill:\s*/, '').replace(/^"|"$/g, '')
       } else if (/^readonly:/.test(t) && cur) {
         cur.readonly = /true/.test(t)
       } else if (/^human_confirm:/.test(t) && cur) {
@@ -444,6 +458,8 @@ export function parseYaml(raw: string): { name: string; validate: boolean; steps
         cur.humanConfirmMessage = t.replace(/^message:\s*/, '').replace(/^"|"$/g, '')
       } else if (/^notify_telegram:/.test(t) && cur) {
         cur.humanConfirmNotifyTelegram = /true/.test(t)
+      } else if (/^screenshot:/.test(t) && cur) {
+        cur.humanConfirmScreenshot = /true/.test(t)
       } else if (/^timeout:/.test(t) && cur) {
         cur.timeout = parseInt(t.replace(/^timeout:\s*/, '')) || 300
         inOutput = false
@@ -474,9 +490,11 @@ function buildStep(partial: Partial<StepData>, index: number): StepData {
     expect: partial.expect ?? '',
     skillMode: partial.skillMode ?? false,
     readonly: partial.readonly ?? false,
+    skill: partial.skill ?? '',
     humanConfirm: partial.humanConfirm ?? false,
     humanConfirmMessage: partial.humanConfirmMessage ?? '',
     humanConfirmNotifyTelegram: partial.humanConfirmNotifyTelegram ?? true,
+    humanConfirmScreenshot: partial.humanConfirmScreenshot ?? false,
     timeout: partial.timeout ?? (partial.humanConfirm ? 3600 : 300),
     retry: partial.retry ?? 0,
     index,

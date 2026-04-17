@@ -32,6 +32,7 @@ function migrateNodes(nodes: AppNode[]): AppNode[] {
             outputPath: d.outputPath ?? '',
             expectedOutput: d.expect ?? '',
             readonly: d.readonly ?? false,
+            skill: d.skill ?? '',
             timeout: d.timeout ?? 300,
             retry: d.retry ?? 0,
             index: d.index ?? 0,

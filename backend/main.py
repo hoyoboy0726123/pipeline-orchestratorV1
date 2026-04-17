@@ -258,6 +258,56 @@ async def remove_skill_package(pkg_name: str):
     return {"message": msg}
 
 
+@app.get("/settings/skill-packages/unlisted")
+async def scan_unlisted_skill_packages():
+    """掃 venv 中已安裝但不在 skill_packages.txt 也不在 requirements.txt 的套件。"""
+    from skill_pkg_manager import scan_unlisted_packages
+    return {"packages": scan_unlisted_packages()}
+
+
+class AdoptPackageRequest(BaseModel):
+    name: str
+
+
+@app.post("/settings/skill-packages/adopt")
+async def adopt_existing_package(req: AdoptPackageRequest):
+    """把已安裝的套件加入 skill_packages.txt（不再重新 install）。"""
+    from skill_pkg_manager import add_to_list_only
+    ok, msg = add_to_list_only(req.name)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"message": msg}
+
+
+# ── Claude Code Skills（從 ~/.agents/skills/ 掃描）──────────
+@app.get("/skills/available")
+async def get_available_skills():
+    """列出使用者安裝的 Claude Code skills（掃 ~/.agents/skills/）。"""
+    from skill_scanner import list_available_skills, SKILLS_ROOT
+    return {
+        "skills_root": str(SKILLS_ROOT),
+        "exists": SKILLS_ROOT.exists(),
+        "skills": list_available_skills(),
+    }
+
+
+@app.get("/skills/{skill_name}/dependencies")
+async def scan_skill_deps(skill_name: str):
+    """掃描指定 skill 的 Python / Node.js 依賴。"""
+    from skill_scanner import scan_skill_dependencies
+    result = scan_skill_dependencies(skill_name)
+    if not result.get("found"):
+        raise HTTPException(status_code=404, detail=f"找不到 skill：{skill_name}")
+    # 加上目前已安裝的 pip 套件，前端可對照
+    # list_packages() 回傳 list[dict]，每個 dict 有 {name, installed, version}
+    from skill_pkg_manager import list_packages
+    installed_names = {p["name"].lower() for p in list_packages() if p.get("installed")}
+    suggested = result["python"]["suggested_pip"]
+    result["python"]["installed"] = sorted(s for s in suggested if s.lower() in installed_names)
+    result["python"]["missing"] = [s for s in suggested if s.lower() not in installed_names]
+    return result
+
+
 # ── Notification Settings ──────────────────────────────────
 class NotificationSettingsRequest(BaseModel):
     telegram_bot_token: Optional[str] = None

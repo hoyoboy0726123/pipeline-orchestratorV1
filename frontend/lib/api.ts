@@ -102,6 +102,46 @@ export async function fsCheckVenv(dir: string): Promise<{ has_venv: boolean; pyt
   return res.json()
 }
 
+// ── Claude Code Skills ──────────────────────────────────────
+export interface AvailableSkill {
+  name: string
+  display_name: string
+  description: string
+  path: string
+  has_scripts: boolean
+  has_references: boolean
+  has_assets: boolean
+  has_package_json?: boolean
+  has_requirements?: boolean
+}
+export async function listAvailableSkills(): Promise<{ skills_root: string; exists: boolean; skills: AvailableSkill[] }> {
+  const res = await fetch(`${BASE}/skills/available`)
+  if (!res.ok) throw new Error('載入 Skill 清單失敗')
+  return res.json()
+}
+
+export interface SkillDependencies {
+  skill_name: string
+  found: boolean
+  path?: string
+  python?: {
+    requirements_txt: string[]
+    imports_detected: string[]
+    suggested_pip: string[]
+    installed: string[]
+    missing: string[]
+  }
+  node?: {
+    package_json: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> } | null
+    needs_npm_install: boolean
+  }
+}
+export async function scanSkillDependencies(displayName: string): Promise<SkillDependencies> {
+  const res = await fetch(`${BASE}/skills/${encodeURIComponent(displayName)}/dependencies`)
+  if (!res.ok) throw new Error('掃描依賴失敗')
+  return res.json()
+}
+
 // ── Log Analysis ────────────────────────────────────────────
 export interface LogSuggestion { module: string; pip_name: string; found_in: string[] }
 export interface LogAnalysis { analyzed: number; files: { name: string; size: number; has_errors: boolean }[]; suggestions: LogSuggestion[] }
@@ -336,6 +376,25 @@ export async function removeSkillPackage(name: string): Promise<string> {
   })
   const data = await res.json()
   if (!res.ok) throw new Error(data.detail ?? '移除失敗')
+  return data.message
+}
+
+export interface UnlistedPackage { name: string; version: string }
+export async function scanUnlistedPackages(): Promise<UnlistedPackage[]> {
+  const res = await fetch(`${BASE}/settings/skill-packages/unlisted`)
+  if (!res.ok) throw new Error('掃描 venv 失敗')
+  const data = await res.json()
+  return data.packages
+}
+
+export async function adoptExistingPackage(name: string): Promise<string> {
+  const res = await fetch(`${BASE}/settings/skill-packages/adopt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.detail ?? '加入失敗')
   return data.message
 }
 
