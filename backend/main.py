@@ -731,11 +731,19 @@ async def delete_pipeline_run(run_id: str):
 
 @app.post("/pipeline/runs/{run_id}/resume")
 async def resume_pipeline_run(run_id: str, req: PipelineDecisionRequest):
-    if req.decision not in ("retry", "skip", "abort", "continue", "retry_with_hint"):
-        raise HTTPException(status_code=400, detail="decision 必須是 retry / skip / abort / continue / retry_with_hint")
+    if req.decision not in ("retry", "skip", "abort", "continue", "retry_with_hint", "answer"):
+        raise HTTPException(status_code=400, detail="decision 必須是 retry / skip / abort / continue / retry_with_hint / answer")
     from pipeline.runner import resume_pipeline
     msg = await resume_pipeline(run_id, req.decision, hint=req.hint or "")
     return {"message": msg}
+
+
+@app.get("/pipeline/runs/{run_id}/ask-user")
+async def get_pending_ask_user(run_id: str):
+    """回傳 run 目前的 ask_user 問題（若無則 question 為空）。"""
+    from pipeline.executor import get_pending_question
+    q = get_pending_question(run_id)
+    return {"pending": q is not None, "question": q}
 
 
 @app.post("/pipeline/runs/{run_id}/abort")

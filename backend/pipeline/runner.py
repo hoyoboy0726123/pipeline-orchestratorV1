@@ -119,6 +119,56 @@ def _confirm_keyboard(run_id: str, screenshot: bool = False) -> InlineKeyboardMa
     return InlineKeyboardMarkup(rows)
 
 
+def _ask_user_keyboard(run_id: str, options: list) -> InlineKeyboardMarkup:
+    """
+    ask_user 問題的 Telegram 鍵盤。
+    - 有 options → 每個選項一個按鈕（一行最多 2 個）+ 自由輸入 + 中止
+    - 無 options → 只有「自由輸入」和「中止」
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    if options:
+        # callback 長度上限 64 bytes，用索引傳遞
+        row: list[InlineKeyboardButton] = []
+        for i, opt in enumerate(options):
+            label = str(opt)
+            if len(label) > 30:
+                label = label[:27] + "…"
+            row.append(InlineKeyboardButton(label, callback_data=f"pipe_answer:{run_id}:{i}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+    rows.append([
+        InlineKeyboardButton("✍ 自由輸入", callback_data=f"pipe_answer_free:{run_id}"),
+        InlineKeyboardButton("🛑 中止", callback_data=f"pipe_abort:{run_id}"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _send_ask_user_notification(run, question: str, options: list, context: str, step_name: str):
+    """Skill agent 呼叫 ask_user 時發送 Telegram 通知。"""
+    import html as _html
+    total = len(run.config_dict.get("steps", [])) if run.config_dict else 0
+    step_num = run.current_step + 1
+    lines = [
+        "❓ <b>AI 技能請求人工協助</b>",
+        "",
+        f"📋 {run.pipeline_name}",
+        f"📍 步驟 {step_num}/{total}：<b>{_html.escape(step_name)}</b>",
+        "",
+        f"<b>問題</b>：{_html.escape(question)}",
+    ]
+    if context:
+        lines.append(f"\n<b>背景</b>：{_html.escape(context)}")
+    if options:
+        lines.append("\n請從下方選項選擇，或點「自由輸入」回答。")
+    else:
+        lines.append("\n請點「自由輸入」並傳送文字回答。")
+    await _tg_send(run.telegram_chat_id, "\n".join(lines),
+                   _ask_user_keyboard(run.run_id, options))
+
+
 def _is_valid_tg_token(token: str) -> bool:
     """檢查 Telegram Bot Token 格式是否正確（數字:字母混合）"""
     if not token or ":" not in token:
@@ -726,6 +776,28 @@ async def resume_pipeline(run_id: str, decision: str, hint: str = "") -> str:
     total = len(config.steps)
     # 附加到原始 log 檔，確保前端讀到的 log_path 始終指向同一個檔案
     logger = resume_run_logger(run.run_id, run.log_path)
+
+    # ── ask_user 回答：skill agent 仍在 in-memory 等待 event ──
+    if run.awaiting_type == "ask_user":
+        from pipeline.executor import deliver_ask_user_answer
+        if decision == "answer":
+            ok = deliver_ask_user_answer(run_id, hint)
+            if not ok:
+                # agent 可能已 timeout 或後端已重啟
+                return "⚠️ 答案送達失敗：skill agent 已不在等待狀態（可能逾時或後端重啟）"
+            logger.info(f"[ask_user] 使用者答案已送達：{hint[:100]}")
+            return f"✅ 答案已送出"
+        elif decision == "abort":
+            # 先中止 skill agent 的等待（讓它收到 None），再把 pipeline 標為 aborted
+            deliver_ask_user_answer(run_id, "")  # 空字串讓 agent 繼續但不拿到答案
+            run.status = "aborted"
+            run.ended_at = datetime.now().isoformat()
+            store.save(run)
+            logger.info("[ask_user] 使用者選擇中止")
+            await _notify_final(run, config)
+            return f"🛑 Pipeline 已中止"
+        else:
+            return f"⚠️ ask_user 只接受 answer 或 abort，收到 {decision}"
 
     if decision == "abort":
         run.status = "aborted"

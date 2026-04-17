@@ -200,11 +200,11 @@ def scan_skill_dependencies(skill_name: str) -> dict:
     for py_file in skill_dir.rglob("*.py"):
         imports_detected.update(_extract_py_imports(py_file))
 
-    # 排除 stdlib + skill 自家模組（檔名 + skill 底下的子資料夾名）
+    # 排除 stdlib + skill 自家模組（所有 .py 檔名 + skill 底下所有層級的資料夾名）
     local_module_names = {f.stem for f in skill_dir.rglob("*.py")}
-    local_module_names.update(
-        d.name for d in skill_dir.iterdir() if d.is_dir() and not d.name.startswith(".")
-    )
+    for d in skill_dir.rglob("*"):
+        if d.is_dir() and not d.name.startswith(".") and d.name != "__pycache__":
+            local_module_names.add(d.name)
     third_party = sorted(
         imp for imp in imports_detected
         if imp not in _STDLIB_MODULES and imp not in local_module_names and not imp.startswith("_")
@@ -281,25 +281,64 @@ def get_skill_prompt_injection(skill_name: str) -> Optional[str]:
 
     parts = [
         f"\n\n【掛載 Skill：{skill_name}】",
-        f"以下為 SKILL.md 全文內容，描述此 skill 的目的、用法與注意事項。",
         f"**Skill 根目錄**：`{abs_path}`",
         f"存取子資源時請使用絕對路徑（上方根目錄 + 子路徑）。",
     ]
     if scripts_lines:
         parts.append(f"\n**可執行腳本（scripts/）**：\n" + "\n".join(scripts_lines))
         parts.append(
-            "你可以用 `subprocess.run([sys.executable, \"<scripts 絕對路徑>\", args...])` 呼叫這些腳本，\n"
-            "或用 `sys.path.insert(0, \"<scripts 絕對路徑>\")` 然後 import 使用。"
+            "呼叫方式：`subprocess.run([sys.executable, \"<scripts 絕對路徑>\", args...])` "
+            "或 `sys.path.insert(0, \"<scripts 絕對路徑>\")` 再 import。"
         )
     if references_lines:
         parts.append(f"\n**參考文件（references/）**：\n" + "\n".join(references_lines))
-        parts.append("需要更多資訊時，可用 read_file 工具讀取這些文件。")
+        parts.append("需要更多資訊時用 read_file 工具讀取這些文件。")
     if assets_lines:
         parts.append(f"\n**資源檔案（assets/）**：\n" + "\n".join(assets_lines))
 
     parts.append(f"\n--- SKILL.md 內容開始 ---\n{md_text}\n--- SKILL.md 內容結束 ---")
+
     parts.append(
-        "請依照 SKILL.md 的指示執行任務。如果 skill 提供了可用腳本，優先考慮呼叫腳本而非自己重寫。"
+        "\n\n【Skill 使用原則】\n"
+        "SKILL.md 是這個 skill 的**使用說明書與入口**。正確的使用流程：\n"
+        "\n"
+        "1. **先讀懂 SKILL.md 全文** — 理解這個 skill 設計來解決什麼問題、推薦的工作流程、有哪些步驟需要依序執行\n"
+        "2. **依照 SKILL.md 的指引行動** — SKILL.md 會告訴你「什麼情境下讀哪個 references 文件」「什麼步驟要跑哪個 scripts 腳本」「哪些 assets 要引用」。你的決策應來自 SKILL.md，而非自己的猜測\n"
+        "3. **按需讀取子資源** — 不用一次讀完所有 references / scripts，按 SKILL.md 的指引在**當下需要**時才用 read_file 讀\n"
+        "\n"
+        "**不要做這些事**：\n"
+        "- 不要**憑 skill 名稱或描述猜測它的實作方式**。skill 可能用非直覺的技術路線完成任務（例如一個處理某格式的 skill，不一定使用該格式的同名 pip 套件；可能改用 CLI 工具、檔案解壓、API 呼叫等其他手段）\n"
+        "- 不要**跳過 SKILL.md 直接自己寫程式碼** — 可能忽略了 skill 設計時納入的關鍵步驟、驗證邏輯、或錯誤處理\n"
+        "- 不要**預期任何外部套件存在**。若 SKILL.md 或 scripts/ 未明示某套件是依賴，請以系統的「已安裝 Python 套件」清單為唯一根據\n"
+        "\n"
+        "**執行時的優先順序**（依序判斷）：\n"
+        "1. 若 scripts/ 有合適的腳本 → 直接呼叫（已驗證過，比現場寫更可靠）\n"
+        "2. 若 SKILL.md 或 references/ **指示使用特定工具或命令**（例如 Node.js、npm 套件、CLI 工具、其他語言的 subprocess 等非 Python 方案）→ **照 SKILL 推薦的方式執行，不要擅自改用 Python**。可用 `run_shell` 呼叫任何可執行指令\n"
+        "3. 若 SKILL 沒指示特定工具 → 自行撰寫 Python，只用已安裝的套件\n"
+        "4. 不確定工具或套件是否可用 → 先用 `run_shell` 檢查（如 `node -v`、`where <cmd>`、`pip show <pkg>`）後再決定，不要盲目嘗試\n"
+        "\n"
+        "**關於互動式指示**：\n"
+        "若 SKILL.md 描述包含「詢問使用者」「讓使用者選擇」「ask the user」等互動步驟，\n"
+        "可以呼叫 **ask_user 工具**（見下方），把問題丟給使用者回答。請遵守以下原則：\n"
+        "- 任務描述已指定選項 → **不要問**，直接以任務描述為準\n"
+        "- 選項是可推論的合理預設 → **不要問**，直接用預設並在 summary 說明假設\n"
+        "- 只有在**會嚴重影響結果**且無法推論時才用 ask_user（例如「要以哪個使用者身份執行」「要處理哪份機密資料」）\n"
+        "- ask_user 有次數上限，用完就不能再問。**請珍惜使用**\n"
+        "\n"
+        "【ask_user 工具（僅掛載 skill 時可用）】\n"
+        "用法：\n"
+        "<tool>ask_user</tool>\n"
+        "<input>{\n"
+        "  \"question\": \"要輸出哪種格式的報告？\",\n"
+        "  \"options\": [\"PDF\", \"Word\", \"Markdown\"],\n"
+        "  \"context\": \"資料共 120 筆，標題為中文\"\n"
+        "}</input>\n"
+        "\n"
+        "- `question`（必填）：問題本身，用中文\n"
+        "- `options`（選填）：選項陣列；若提供，使用者介面會顯示成按鈕。若為純文字回答則省略此欄\n"
+        "- `context`（選填）：幫助使用者做決定的背景資訊\n"
+        "\n"
+        "使用者回答後，工具會回傳 `使用者回答：<答案>`，你再依答案繼續任務。若逾時或被取消則回傳錯誤提示，此時請以合理預設完成或呼叫 done(success=false)。"
     )
 
     return "\n".join(parts)

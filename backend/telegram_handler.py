@@ -20,6 +20,9 @@ logger = logging.getLogger("telegram_handler")
 # 等待用戶輸入補充指示的狀態：chat_id → run_id
 _pending_hints: dict[int, str] = {}
 
+# 等待用戶輸入 ask_user 自由回答的狀態：chat_id → run_id
+_pending_answers: dict[int, str] = {}
+
 
 async def _poll_loop():
     """長輪詢 Telegram updates，處理 callback_query 和文字訊息"""
@@ -69,9 +72,27 @@ async def _poll_loop():
             for update in updates:
                 last_offset = update.update_id + 1
 
-                # ── 文字訊息：檢查是否有等待中的補充指示 ──
+                # ── 文字訊息：檢查是否有等待中的補充指示或 ask_user 答案 ──
                 if update.message and update.message.text:
                     chat_id = update.message.chat_id
+                    if chat_id in _pending_answers:
+                        run_id = _pending_answers.pop(chat_id)
+                        answer = update.message.text.strip()
+                        logger.info(f"收到 ask_user 答案 for run {run_id}: {answer[:100]}")
+                        try:
+                            from pipeline.runner import resume_pipeline
+                            msg = await resume_pipeline(run_id, "answer", hint=answer)
+                            await _bot_instance.send_message(
+                                chat_id=chat_id,
+                                text=f"✅ {msg}",
+                            )
+                        except Exception as e:
+                            logger.error(f"ask_user answer failed: {e}")
+                            await _bot_instance.send_message(
+                                chat_id=chat_id,
+                                text=f"❌ 送出失敗：{str(e)[:200]}",
+                            )
+                        continue
                     if chat_id in _pending_hints:
                         run_id = _pending_hints.pop(chat_id)
                         hint_text = update.message.text.strip()
@@ -97,16 +118,17 @@ async def _poll_loop():
                 cb = update.callback_query
                 data = cb.data or ""
 
-                # 解析 callback_data: pipe_{action}:{run_id}
+                # 解析 callback_data: pipe_{action}:{run_id} 或 pipe_answer:{run_id}:{idx}
                 if not data.startswith("pipe_"):
                     continue
 
-                parts = data.split(":", 1)
-                if len(parts) != 2:
+                parts = data.split(":", 2)
+                if len(parts) < 2:
                     continue
 
                 action = parts[0].replace("pipe_", "")
                 run_id = parts[1]
+                extra = parts[2] if len(parts) >= 3 else ""
 
                 # ── 查看 Log ──
                 if action == "log":
@@ -163,6 +185,61 @@ async def _poll_loop():
                             await cb.answer(f"❌ {str(e)[:150]}")
                         except Exception:
                             pass
+                    continue
+
+                # ── ask_user 按選項回答 ──
+                if action == "answer":
+                    # extra 是 option index
+                    try:
+                        opt_idx = int(extra)
+                    except Exception:
+                        await cb.answer("❌ 選項索引錯誤")
+                        continue
+                    # 從 run 狀態取出原 options
+                    from pipeline.store import get_store
+                    import json as _json
+                    store = get_store()
+                    run = store.load(run_id)
+                    if not run or run.awaiting_type != "ask_user":
+                        await cb.answer("⚠️ 已非等待狀態")
+                        continue
+                    try:
+                        meta = _json.loads(run.awaiting_suggestion or "{}")
+                        options = meta.get("options") or []
+                    except Exception:
+                        options = []
+                    if opt_idx < 0 or opt_idx >= len(options):
+                        await cb.answer("❌ 選項索引越界")
+                        continue
+                    chosen = str(options[opt_idx])
+                    logger.info(f"Telegram: ask_user 選項 {chosen} for run {run_id}")
+                    try:
+                        from pipeline.runner import resume_pipeline
+                        msg = await resume_pipeline(run_id, "answer", hint=chosen)
+                        await cb.answer(f"已選：{chosen[:50]}")
+                        try:
+                            await cb.edit_message_text(
+                                text=(cb.message.text or "") + f"\n\n✅ 已選擇：{chosen}",
+                            )
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        await cb.answer(f"❌ {str(e)[:150]}")
+                    continue
+
+                # ── ask_user 自由輸入：設定等待狀態，改走文字訊息 ──
+                if action == "answer_free":
+                    logger.info(f"Telegram: 等待 ask_user 自由輸入 for run {run_id}")
+                    _pending_answers[cb.message.chat_id] = run_id
+                    await cb.answer("請輸入答案")
+                    await _bot_instance.send_message(
+                        chat_id=cb.message.chat_id,
+                        text=(
+                            "✍ <b>請輸入你的答案</b>\n\n"
+                            "直接回覆文字訊息即可。AI 會根據你的回答繼續任務。"
+                        ),
+                        parse_mode="HTML",
+                    )
                     continue
 
                 # ── 補充指示：設定等待狀態 ──

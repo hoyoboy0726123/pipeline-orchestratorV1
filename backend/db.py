@@ -56,6 +56,7 @@ def init_db():
             last_fail_at       REAL NOT NULL DEFAULT 0,
             avg_runtime_sec    REAL NOT NULL DEFAULT 0,
             disabled           INTEGER NOT NULL DEFAULT 0,
+            was_interactive    INTEGER NOT NULL DEFAULT 0,
             UNIQUE(workflow_id, step_name)
         );
 
@@ -71,6 +72,18 @@ def init_db():
     _migrate_old_runs(conn)
     # 遷移：如果舊 recipe JSON 檔案存在，匯入 recipes
     _migrate_old_recipes(conn)
+    # 欄位遷移：舊版 recipes 表缺 was_interactive 欄位
+    _add_column_if_missing(conn, "recipes", "was_interactive", "INTEGER NOT NULL DEFAULT 0")
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, col_def: str):
+    try:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+            conn.commit()
+    except Exception:
+        pass
 
 
 def _migrate_old_runs(conn: sqlite3.Connection):
@@ -244,7 +257,8 @@ def _row_to_workflow(row) -> dict:
 
 def save_recipe(workflow_id: str, step_name: str, task_hash: str,
                 input_fingerprints: dict, output_path: Optional[str],
-                code: str, python_version: str, runtime_sec: float) -> dict:
+                code: str, python_version: str, runtime_sec: float,
+                was_interactive: bool = False) -> dict:
     import hashlib
     conn = get_conn()
     rid = hashlib.sha1(f"{workflow_id}:{step_name}:{task_hash}".encode()).hexdigest()[:16]
@@ -256,6 +270,7 @@ def save_recipe(workflow_id: str, step_name: str, task_hash: str,
     ).fetchone()
 
     fps_json = json.dumps(input_fingerprints, ensure_ascii=False)
+    wi = 1 if was_interactive else 0
 
     if existing:
         old_count = existing[1]
@@ -264,18 +279,19 @@ def save_recipe(workflow_id: str, step_name: str, task_hash: str,
         new_avg = (old_avg * old_count + runtime_sec) / new_count
         conn.execute("""
             UPDATE recipes SET task_hash=?, input_fingerprints=?, output_path=?, code=?,
-            python_version=?, success_count=?, last_success_at=?, avg_runtime_sec=?, disabled=0
+            python_version=?, success_count=?, last_success_at=?, avg_runtime_sec=?, disabled=0,
+            was_interactive=?
             WHERE workflow_id=? AND step_name=?
         """, (task_hash, fps_json, output_path, code, python_version,
-              new_count, now, new_avg, workflow_id, step_name))
+              new_count, now, new_avg, wi, workflow_id, step_name))
     else:
         conn.execute("""
             INSERT INTO recipes (id, workflow_id, step_name, task_hash, input_fingerprints,
             output_path, code, python_version, success_count, fail_count,
-            created_at, last_success_at, avg_runtime_sec)
-            VALUES (?,?,?,?,?,?,?,?,1,0,?,?,?)
+            created_at, last_success_at, avg_runtime_sec, was_interactive)
+            VALUES (?,?,?,?,?,?,?,?,1,0,?,?,?,?)
         """, (rid, workflow_id, step_name, task_hash, fps_json,
-              output_path, code, python_version, now, now, runtime_sec))
+              output_path, code, python_version, now, now, runtime_sec, wi))
     conn.commit()
     return get_recipe(workflow_id, step_name)
 
@@ -367,6 +383,9 @@ def get_recipe_status(workflow_id: str, step_names: list[str]) -> dict:
 
 
 def _row_to_recipe(row) -> dict:
+    # row schema: id(0) wf(1) step(2) hash(3) fps(4) out(5) code(6) ver(7)
+    #             scnt(8) fcnt(9) created(10) succ_at(11) fail_at(12) runtime(13)
+    #             disabled(14) was_interactive(15)
     return {
         "recipe_id": row[0], "workflow_id": row[1], "step_name": row[2],
         "task_hash": row[3],
@@ -375,6 +394,7 @@ def _row_to_recipe(row) -> dict:
         "success_count": row[8], "fail_count": row[9],
         "created_at": row[10], "last_success_at": row[11], "last_fail_at": row[12],
         "avg_runtime_sec": row[13], "disabled": bool(row[14]),
+        "was_interactive": bool(row[15]) if len(row) > 15 else False,
     }
 
 

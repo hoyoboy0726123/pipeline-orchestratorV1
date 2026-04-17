@@ -306,7 +306,10 @@ export default function PipelinePage() {
   const runStatusRef = useRef(runStatus)
   const setRunStatus = (v: typeof runStatus) => { runStatusRef.current = v; _setRunStatus(v) }
   const [awaitingRunId, setAwaitingRunId] = useState<string | null>(null)
-  const [awaitingType, setAwaitingType] = useState<'failure' | 'confirm'>('failure')
+  const [awaitingType, setAwaitingType] = useState<'failure' | 'confirm' | 'ask_user'>('failure')
+  const [askUserOptions, setAskUserOptions] = useState<string[]>([])
+  const [askUserContext, setAskUserContext] = useState('')
+  const [askUserAnswer, setAskUserAnswer] = useState('')
   const [awaitingMessage, setAwaitingMessage] = useState('')
   const [awaitingSuggestion, setAwaitingSuggestion] = useState('')
   const [showRecipeConfirm, setShowRecipeConfirm] = useState(false)
@@ -372,10 +375,18 @@ export default function PipelinePage() {
           if (active.status === 'awaiting_human') {
             setRunStatus('awaiting')
             setAwaitingRunId(active.run_id)
-            const isConfirm = (active as any).awaiting_type === 'human_confirm'
-            setAwaitingType(isConfirm ? 'confirm' : 'failure')
+            const at = (active as any).awaiting_type
+            const mapped = at === 'human_confirm' ? 'confirm' : at === 'ask_user' ? 'ask_user' : 'failure'
+            setAwaitingType(mapped)
             setAwaitingMessage((active as any).awaiting_message || '')
             setAwaitingSuggestion((active as any).awaiting_suggestion || '')
+            if (mapped === 'ask_user') {
+              try {
+                const meta = JSON.parse((active as any).awaiting_suggestion || '{}')
+                setAskUserOptions(meta.options || [])
+                setAskUserContext(meta.context || '')
+              } catch { setAskUserOptions([]); setAskUserContext('') }
+            }
           } else {
             setRunStatus('running')
           }
@@ -742,10 +753,18 @@ export default function PipelinePage() {
               if (active.status === 'awaiting_human') {
                 setRunStatus('awaiting')
                 setAwaitingRunId(active.run_id)
-                const isConfirm = (active as any).awaiting_type === 'human_confirm'
-                setAwaitingType(isConfirm ? 'confirm' : 'failure')
+                const at = (active as any).awaiting_type
+                const mapped = at === 'human_confirm' ? 'confirm' : at === 'ask_user' ? 'ask_user' : 'failure'
+                setAwaitingType(mapped)
                 setAwaitingMessage((active as any).awaiting_message || '')
                 setAwaitingSuggestion((active as any).awaiting_suggestion || '')
+                if (mapped === 'ask_user') {
+                  try {
+                    const meta = JSON.parse((active as any).awaiting_suggestion || '{}')
+                    setAskUserOptions(meta.options || [])
+                    setAskUserContext(meta.context || '')
+                  } catch { setAskUserOptions([]); setAskUserContext('') }
+                }
               } else {
                 setRunStatus('running')
               }
@@ -824,14 +843,24 @@ export default function PipelinePage() {
           setRunning(false)
           setRunStatus('awaiting')
           setAwaitingRunId(runId)
-          const isConfirm = data.awaiting_type === 'human_confirm'
-          setAwaitingType(isConfirm ? 'confirm' : 'failure')
+          const at = data.awaiting_type
+          const mapped = at === 'human_confirm' ? 'confirm' : at === 'ask_user' ? 'ask_user' : 'failure'
+          setAwaitingType(mapped)
           setAwaitingMessage(data.awaiting_message || '')
           setAwaitingSuggestion(data.awaiting_suggestion || '')
-          toast[isConfirm ? 'info' : 'warning'](
-            isConfirm ? '✋ 等待人工確認' : '步驟執行失敗，請選擇處理方式',
-            { duration: 0, id: 'awaiting' }
-          )
+          if (mapped === 'ask_user') {
+            try {
+              const meta = JSON.parse(data.awaiting_suggestion || '{}')
+              setAskUserOptions(meta.options || [])
+              setAskUserContext(meta.context || '')
+            } catch { setAskUserOptions([]); setAskUserContext('') }
+            toast.info('❓ AI 請求人工回答', { duration: 0, id: 'awaiting' })
+          } else {
+            toast[mapped === 'confirm' ? 'info' : 'warning'](
+              mapped === 'confirm' ? '✋ 等待人工確認' : '步驟執行失敗，請選擇處理方式',
+              { duration: 0, id: 'awaiting' }
+            )
+          }
         }
         return
       }
@@ -841,6 +870,9 @@ export default function PipelinePage() {
         setAwaitingSuggestion('')
         setShowHintInput(false)
         setHintText('')
+        setAskUserOptions([])
+        setAskUserContext('')
+        setAskUserAnswer('')
         toast.dismiss('awaiting')
         // 如果後端已是 completed/failed/aborted，不設 idle，讓下方 done 分支處理
         if (data.status === 'running') {
@@ -894,7 +926,7 @@ export default function PipelinePage() {
   const [hintText, setHintText] = useState('')
   const [showHintInput, setShowHintInput] = useState(false)
 
-  const handleDecision = async (decision: 'retry' | 'skip' | 'abort' | 'continue' | 'retry_with_hint', hint?: string) => {
+  const handleDecision = async (decision: 'retry' | 'skip' | 'abort' | 'continue' | 'retry_with_hint' | 'answer', hint?: string) => {
     if (!awaitingRunId) return
     const rid = awaitingRunId
 
@@ -1197,6 +1229,48 @@ export default function PipelinePage() {
                 >送出</button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ask_user banner — skill agent 詢問使用者 */}
+        {runStatus === 'awaiting' && awaitingRunId && awaitingType === 'ask_user' && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-sky-50 border border-sky-200 rounded-2xl shadow-lg px-5 py-3 space-y-2 max-w-[640px] w-[90vw]">
+            <div className="flex items-start gap-2">
+              <span className="text-sky-700 font-medium text-sm whitespace-nowrap">❓ AI 請求回答</span>
+              <div className="flex-1 min-w-0 text-sm text-gray-800 break-words">{awaitingMessage}</div>
+            </div>
+            {askUserContext && (
+              <div className="text-xs text-gray-500 bg-white/60 rounded px-2 py-1 border border-sky-100">
+                <span className="font-medium">背景：</span>{askUserContext}
+              </div>
+            )}
+            {askUserOptions.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {askUserOptions.map(opt => (
+                  <button
+                    key={opt}
+                    onClick={() => handleDecision('answer', opt)}
+                    className="px-3 py-1.5 bg-sky-600 text-white rounded-lg text-xs font-medium hover:bg-sky-700"
+                  >{opt}</button>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                value={askUserAnswer}
+                onChange={e => setAskUserAnswer(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && askUserAnswer.trim()) { handleDecision('answer', askUserAnswer.trim()); setAskUserAnswer('') } }}
+                placeholder={askUserOptions.length > 0 ? '或輸入自訂答案…' : '請輸入答案…'}
+                className="flex-1 border border-sky-300 rounded-lg px-2.5 py-1.5 text-xs outline-none focus:border-sky-500 bg-white"
+                autoFocus
+              />
+              <button
+                onClick={() => { if (askUserAnswer.trim()) { handleDecision('answer', askUserAnswer.trim()); setAskUserAnswer('') } }}
+                disabled={!askUserAnswer.trim()}
+                className="px-3 py-1.5 bg-sky-600 text-white rounded-lg text-xs font-medium hover:bg-sky-700 disabled:opacity-50 whitespace-nowrap"
+              >送出</button>
+              <button onClick={() => handleDecision('abort')} className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 whitespace-nowrap">🛑 中止</button>
+            </div>
           </div>
         )}
 

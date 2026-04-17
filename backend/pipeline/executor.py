@@ -26,6 +26,35 @@ from config import GROQ_API_KEY, GROQ_MODEL_MAIN
 
 SKILL_TOOL_TIMEOUT = 60
 SKILL_MAX_ITERATIONS = 15
+ASK_USER_MAX = 3          # 一個 skill 節點最多 ask_user 次數
+ASK_USER_TIMEOUT = 3600   # 單次等待使用者回答的逾時（秒）
+
+
+# ── ask_user 進行中的問題：run_id -> {question, options, context, event, answer} ──
+# In-memory：後端重啟會清空，使用者需重新觸發
+_pending_questions: dict[str, dict] = {}
+
+
+def deliver_ask_user_answer(run_id: str, answer: str) -> bool:
+    """外部（resume_pipeline）呼叫：把答案送給正在等待的 skill agent。"""
+    pending = _pending_questions.get(run_id)
+    if not pending:
+        return False
+    pending["answer"] = answer
+    pending["event"].set()
+    return True
+
+
+def get_pending_question(run_id: str) -> Optional[dict]:
+    """查詢某 run 目前是否正在等 ask_user 答案。"""
+    pending = _pending_questions.get(run_id)
+    if not pending:
+        return None
+    return {
+        "question": pending["question"],
+        "options": pending["options"],
+        "context": pending["context"],
+    }
 
 # ── Per-run subprocess tracking（for immediate abort）─────────────────────────
 import threading
@@ -611,6 +640,81 @@ def _execute_skill_tool(tool_name: str, tool_input: str, cwd: Optional[str] = No
         return f"[錯誤] 未知工具：{tool_name}"
 
 
+async def _wait_for_ask_user(
+    run_id: str,
+    question: str,
+    options: list,
+    context: str,
+    logger: logging.Logger,
+    step_name: str,
+) -> Optional[str]:
+    """
+    把問題送出去（Pipeline 進 awaiting_human + Telegram/前端 推問題），
+    in-memory 等待答案送達（asyncio.Event），或 timeout 回 None。
+    """
+    from pipeline.store import get_store
+    store = get_store()
+    run = store.load(run_id)
+    if not run:
+        logger.warning(f"[{step_name}] ask_user 失敗：找不到 run {run_id}")
+        return None
+
+    event = asyncio.Event()
+    _pending_questions[run_id] = {
+        "question": question,
+        "options": options,
+        "context": context,
+        "event": event,
+        "answer": None,
+    }
+
+    # 更新 run 狀態：進入 awaiting_human
+    run.status = "awaiting_human"
+    run.awaiting_type = "ask_user"
+    run.awaiting_message = question
+    run.awaiting_suggestion = json.dumps({"options": options, "context": context}, ensure_ascii=False)
+    store.save(run)
+
+    # 發通知（Telegram + 前端會 poll 到狀態變化）
+    try:
+        from pipeline.runner import _send_ask_user_notification
+        await _send_ask_user_notification(run, question, options, context, step_name)
+    except Exception as e:
+        logger.warning(f"[{step_name}] ask_user 通知發送失敗：{e}")
+
+    # 等待答案或 timeout
+    logger.info(f"[{step_name}] ⏸ ask_user 等待中：{question}")
+    try:
+        await asyncio.wait_for(event.wait(), timeout=ASK_USER_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning(f"[{step_name}] ask_user 逾時（{ASK_USER_TIMEOUT}s）")
+        _pending_questions.pop(run_id, None)
+        # 恢復狀態（注意：可能其他邏輯已接手改狀態，這裡僅在仍為 ask_user 時清除）
+        run2 = store.load(run_id)
+        if run2 and run2.awaiting_type == "ask_user":
+            run2.status = "running"
+            run2.awaiting_type = ""
+            run2.awaiting_message = ""
+            run2.awaiting_suggestion = ""
+            store.save(run2)
+        return None
+
+    answer = _pending_questions[run_id]["answer"]
+    _pending_questions.pop(run_id, None)
+
+    # 恢復 running 狀態
+    run3 = store.load(run_id)
+    if run3:
+        run3.status = "running"
+        run3.awaiting_type = ""
+        run3.awaiting_message = ""
+        run3.awaiting_suggestion = ""
+        store.save(run3)
+
+    logger.info(f"[{step_name}] ▶ ask_user 收到答案：{answer}")
+    return answer
+
+
 async def execute_step_with_skill(
     task_description: str,
     timeout: int,
@@ -798,11 +902,8 @@ async def execute_step_with_skill(
 
 【非互動式執行（重要）】
 - **嚴禁在程式碼中使用 `input()`、`getpass()`、`sys.stdin.read()` 或任何會等待使用者輸入的函式 — Pipeline 是非互動環境，這些呼叫會造成永久卡死**
-- **若掛載的 Skill 描述包含「詢問使用者」「讓使用者選擇」「ask the user」等互動指示，請忽略該步驟，改用下列策略：**
-  1. 若任務描述已指定選項或參數，以任務描述為準
-  2. 若沒有指定，選擇**最合理的預設值**並在 summary 中說明你做的假設
-  3. 若選擇會嚴重影響結果（例如會覆蓋重要檔案、無法回復的操作），才呼叫 `done(success=false)` 並在 error 中說明「需要使用者指定 X 才能繼續」，讓使用者補充到任務描述後重跑
-- **記住**：你的產出會被儲存為 Recipe，之後每次排程執行都會直接重跑這段 code。所以選合理預設後鎖定，比停下來問使用者更符合此系統的設計理念
+- 若任務需要做選擇，優先以任務描述中的指定為準；若無指定，選擇**最合理的預設值**並在 summary 中說明假設
+- 只有當選擇會嚴重影響結果（例如會覆蓋重要檔案、無法回復的操作）才呼叫 `done(success=false)` 讓使用者補充後重跑
 
 【重試策略（重要）】
 - **如果上一次嘗試失敗，絕對不要用相同的方法重試**
@@ -916,6 +1017,8 @@ async def execute_step_with_skill(
         import time as _time
         skill_start_time = _time.time()
         last_successful_code: Optional[str] = None  # 供 Recipe Book 儲存：只記最後一段成功的 run_python
+        ask_user_count = 0               # ask_user 呼叫次數（上限 ASK_USER_MAX）
+        was_interactive = False          # 首次互動標記（給 recipe）
 
         for iteration in range(SKILL_MAX_ITERATIONS):
             logger.info(f"[{step_name}] Skill 執行迭代 {iteration + 1}/{SKILL_MAX_ITERATIONS}")
@@ -994,6 +1097,7 @@ async def execute_step_with_skill(
                                 "code": last_successful_code,
                                 "python_version": f"{_sys2.version_info.major}.{_sys2.version_info.minor}",
                                 "runtime_sec": runtime,
+                                "was_interactive": was_interactive,
                             }
                             if no_save_recipe:
                                 # 延遲模式：檢查是否已有 recipe
@@ -1009,6 +1113,7 @@ async def execute_step_with_skill(
                                         pipeline_id, _rkey, recipe_data["task_hash"],
                                         _fp, output_path, last_successful_code,
                                         recipe_data["python_version"], runtime,
+                                        was_interactive=was_interactive,
                                     )
                                     logger.info(f"[{step_name}] 首次建立 Recipe")
                             else:
@@ -1017,6 +1122,7 @@ async def execute_step_with_skill(
                                     pipeline_id, _rkey, recipe_data["task_hash"],
                                     _fp, output_path, last_successful_code,
                                     recipe_data["python_version"], runtime,
+                                    was_interactive=was_interactive,
                                 )
                         except Exception as e:
                             logger.warning(f"[{step_name}] Recipe 儲存失敗：{e}")
@@ -1034,6 +1140,45 @@ async def execute_step_with_skill(
                     messages.append(HumanMessage(content=reply))
                     messages.append(HumanMessage(content="[系統] done 的 input 必須是有效 JSON，請重試。"))
                     continue
+
+            # ask_user → 暫停 pipeline，等待使用者回答（僅掛載 skill 時允許）
+            if tool_name == "ask_user":
+                if not skill_name:
+                    tool_result = "[錯誤] ask_user 僅在掛載 skill 時可用。請自行以合理預設完成任務。"
+                    messages.append(HumanMessage(content=reply))
+                    messages.append(HumanMessage(content=f"[工具結果 — ask_user]\n{tool_result}"))
+                    continue
+                ask_user_count += 1
+                if ask_user_count > ASK_USER_MAX:
+                    tool_result = f"[錯誤] ask_user 已達上限 {ASK_USER_MAX} 次。請以預設值完成或呼叫 done(success=false)。"
+                    messages.append(HumanMessage(content=reply))
+                    messages.append(HumanMessage(content=f"[工具結果 — ask_user]\n{tool_result}"))
+                    continue
+                try:
+                    q_data = json.loads(tool_input)
+                    question = (q_data.get("question") or "").strip()
+                    options = q_data.get("options") or []
+                    context = (q_data.get("context") or "").strip()
+                    if not question:
+                        raise ValueError("question 不可為空")
+                    if not isinstance(options, list):
+                        options = []
+                except Exception as e:
+                    messages.append(HumanMessage(content=reply))
+                    messages.append(HumanMessage(
+                        content=f"[系統] ask_user input 格式錯誤：{e}。正確格式：{{\"question\":\"...\", \"options\":[...], \"context\":\"...\"}}"
+                    ))
+                    continue
+
+                answer = await _wait_for_ask_user(run_id, question, options, context, logger, step_name)
+                if answer is None:
+                    tool_result = "[錯誤] 等待使用者回答逾時或被取消，請以合理預設完成或呼叫 done(success=false)。"
+                else:
+                    was_interactive = True  # 標記 recipe「首次有人工回答」
+                    tool_result = f"使用者回答：{answer}"
+                messages.append(HumanMessage(content=reply))
+                messages.append(HumanMessage(content=f"[工具結果 — ask_user]\n{tool_result}"))
+                continue
 
             # 執行工具
             logger.info(f"[{step_name}] 工具呼叫：{tool_name}")

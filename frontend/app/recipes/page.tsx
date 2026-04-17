@@ -164,6 +164,11 @@ export default function RecipesPage() {
                               {r.disabled && (
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700">已停用</span>
                               )}
+                              {r.was_interactive && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="首次建立時有使用 ask_user 取得使用者回答，答案已寫入 code">
+                                  ⚠️ 首次有人工回答
+                                </span>
+                              )}
                             </div>
                             <div className="text-xs text-gray-500 flex items-center gap-3 mt-0.5">
                               <span className="flex items-center gap-1">
