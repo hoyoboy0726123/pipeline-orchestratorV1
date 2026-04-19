@@ -320,6 +320,37 @@ export default function PipelinePage() {
   const logEndRef  = useRef<HTMLDivElement>(null)
   const logContainerRef = useRef<HTMLDivElement>(null)
   const logAutoScrollRef = useRef(true)
+
+  // ── Log panel 高度調整 ─────────────────────────────────────
+  const LOG_HEIGHT_KEY = 'pipeline-log-height'
+  const LOG_MIN_HEIGHT = 150
+  const LOG_DEFAULT_HEIGHT = 256  // 原本的 h-64
+  const [logHeight, setLogHeight] = useState(LOG_DEFAULT_HEIGHT)
+  const [logResizing, setLogResizing] = useState(false)
+  useEffect(() => {
+    const saved = Number(localStorage.getItem(LOG_HEIGHT_KEY))
+    if (saved >= LOG_MIN_HEIGHT) setLogHeight(saved)
+  }, [])
+  useEffect(() => {
+    if (!logResizing) return
+    const onMove = (e: MouseEvent) => {
+      // 從視窗底往上算 → 拖曳越上寬，面板越高
+      const maxHeight = Math.floor(window.innerHeight / 2)  // 最多占一半螢幕
+      const fromBottom = window.innerHeight - e.clientY
+      const h = Math.min(maxHeight, Math.max(LOG_MIN_HEIGHT, fromBottom))
+      setLogHeight(h)
+    }
+    const onUp = () => {
+      setLogResizing(false)
+      try { localStorage.setItem(LOG_HEIGHT_KEY, String(logHeight)) } catch {}
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [logResizing, logHeight])
   const rfInstanceRef = useRef<ReactFlowInstance<AppNode, Edge> | null>(null)
   const [editingName, setEditingName] = useState(false)
   const runIdRef   = useRef<string | null>(null)
@@ -1330,7 +1361,19 @@ export default function PipelinePage() {
 
         {/* Terminal log panel */}
         {showLog && (
-          <div className="absolute bottom-0 left-0 right-0 h-64 bg-gray-950 border-t border-gray-700 flex flex-col z-30">
+          <div
+            className="absolute bottom-0 left-0 right-0 bg-gray-950 border-t border-gray-700 flex flex-col z-30"
+            style={{ height: logHeight, userSelect: logResizing ? 'none' : undefined }}
+          >
+            {/* Resize handle（上邊緣） */}
+            <div
+              onMouseDown={(e) => { e.preventDefault(); setLogResizing(true) }}
+              onDoubleClick={() => setLogHeight(LOG_DEFAULT_HEIGHT)}
+              title="拖曳調整高度・雙擊還原"
+              className={`absolute top-0 left-0 right-0 h-1 cursor-row-resize z-10 transition-colors ${
+                logResizing ? 'bg-indigo-500' : 'hover:bg-indigo-400'
+              }`}
+            />
             <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-800 shrink-0">
               <Terminal className="w-3.5 h-3.5 text-gray-400" />
               <span className="text-xs text-gray-400 font-mono">Pipeline Log</span>

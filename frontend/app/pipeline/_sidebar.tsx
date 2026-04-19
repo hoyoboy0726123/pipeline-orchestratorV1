@@ -9,9 +9,10 @@ import Link from 'next/link'
 import { toast } from 'sonner'
 import ReactMarkdown from 'react-markdown'
 import { useWorkflowStore } from './_store'
-import { 
-  pipelineChat, createWorkflowApi, exportWorkflowUrl, importWorkflow, 
-  getPipelineScheduled, getPipelineRuns, cancelPipelineSchedule 
+import {
+  pipelineChat, createWorkflowApi, exportWorkflowUrl, importWorkflow,
+  getPipelineScheduled, getPipelineRuns, cancelPipelineSchedule,
+  getEnvPaths, type EnvPaths,
 } from '@/lib/api'
 import type { ScheduledTask } from '@/lib/types'
 
@@ -22,6 +23,56 @@ interface ChatMsg {
   hasYaml?: boolean
   yaml?: string | null
   yamlError?: string | null
+}
+
+// 根據實際專案路徑組 AI 助手的初始訊息：範例使用真實可執行的腳本路徑，
+// 輸出用相對 `ai_output/<name>/` 慣例。使用者可直接把範例描述貼給 AI 產生 YAML。
+function buildWelcomeMessage(env: EnvPaths): string {
+  const root = env.project_root
+  const financeDir = env.finance_example_dir  // 例如 ".../test-workflows/finance"
+  const intro = '你好！請告訴我你想自動化的工作流程，我會幫你產生 Pipeline YAML 設定。'
+  const pathNote = `📁 **輸出路徑慣例**：所有產出檔會放在 \`ai_output/<工作流名稱>/\` 子資料夾（系統自動解析到 \`${root}\`）。`
+
+  // 範例 1：Python 腳本串接（用專案內建的 finance 範例腳本，若存在）
+  let ex1: string
+  if (env.has_finance_example && financeDir) {
+    ex1 = `**範例 1（Python 腳本串接・使用本專案內建的財務範例）**
+第一步：執行 \`python ${financeDir}\\stage1_generate_transactions.py\`，輸出到 \`ai_output/q1_finance/raw_transactions.xlsx\`
+第二步：執行 \`python ${financeDir}\\stage2_clean_data.py\`，讀取上一步的 Excel，輸出到 \`ai_output/q1_finance/cleaned.xlsx\`
+第三步：執行 \`python ${financeDir}\\stage3_analyze_finance.py\`，做財務彙總，輸出到 \`ai_output/q1_finance/summary.xlsx\`
+第四步：執行 \`python ${financeDir}\\stage4_generate_report.py\`，產出 \`ai_output/q1_finance/Q1_report.xlsx\``
+  } else {
+    ex1 = `**範例 1（Python 腳本串接）**
+第一步：執行 \`python 你的腳本.py\`，輸出到 \`ai_output/daily_report/raw.csv\`
+第二步：執行 \`python 分析腳本.py\`，讀取上一步的 csv，輸出到 \`ai_output/daily_report/result.xlsx\``
+  }
+
+  // 範例 2：script + AI skill（純自然語言，讓使用者無腦可用）
+  let ex2: string
+  if (env.has_finance_example && financeDir) {
+    ex2 = `**範例 2（Python 腳本 + AI 技能）**
+第一步（Python 腳本）：執行 \`python ${financeDir}\\stage1_generate_transactions.py\`，產出 \`ai_output/demo_beautify/raw_transactions.xlsx\`
+第二步（AI 技能）：把上一步產生的 Excel 美化一下 — 表頭加粗、換底色、每欄寬度自動配合內容，另存為 \`ai_output/demo_beautify/pretty.xlsx\``
+  } else {
+    ex2 = `**範例 2（AI 技能）**
+把 \`ai_output/some_input/report.xlsx\`（或上一步產生的檔案）美化一下 — 表頭加粗、每欄寬度自動配合內容，儲存到 \`ai_output/excel_beautify/formatted_report.xlsx\``
+  }
+
+  // 範例 3：script + AI skill + human_confirm（在範例 2 基礎上加人工審核）
+  let ex3: string
+  if (env.has_finance_example && financeDir) {
+    ex3 = `**範例 3（三種節點組合・Python + AI + 人工確認）**
+第一步（Python 腳本）：執行 \`python ${financeDir}\\stage1_generate_transactions.py\` 產出 \`ai_output/demo_review/raw_transactions.xlsx\`
+第二步（AI 技能）：讀取上一步的 Excel，按「部門」加總 Amount，產出一份欄位為「Department, TotalAmount, TransactionCount」的摘要 Excel：\`ai_output/demo_review/summary.xlsx\`
+第三步（人工確認）：暫停並透過 Telegram 通知我檢查摘要表，確認後才完成`
+  } else {
+    ex3 = `**範例 3（三種節點組合）**
+第一步（Python 腳本）：執行你的腳本，產出 \`ai_output/demo_review/raw.xlsx\`
+第二步（AI 技能）：讀取上一步做簡易統計，輸出 \`ai_output/demo_review/summary.xlsx\`
+第三步（人工確認）：暫停並透過 Telegram 通知我檢查摘要表`
+  }
+
+  return [intro, pathNote, ex1, ex2, ex3].join('\n\n')
 }
 
 // ── Countdown Hook ──────────────────────────────────────────────────────────
@@ -248,8 +299,19 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
   const [newName, setNewName] = useState('')
   const nameInputRef = useRef<HTMLInputElement>(null)
   const [messages, setMessages] = useState<ChatMsg[]>([
-    { role: 'assistant', content: '你好！請告訴我你想自動化的工作流程，我會幫你產生 Pipeline YAML 設定。\n\n**範例 1（Python 腳本串接）**\n第一步：執行 ~/scripts/fetch_data.py，輸出到 ~/ai_output/raw.csv\n第二步：執行 ~/scripts/analyze.py，讀取上一步的 csv，輸出到 ~/ai_output/result.xlsx\n\n**範例 2（AI 技能）**\n把 ~/data/report.xlsx（或上一步產生的資料）整理好，加上格線、自動換行，儲存到 ~/ai_output/formatted_report.xlsx\n\n**範例 3（三種節點組合・財務分析）**\n第一步（Python 腳本）：執行 ~/scripts/fetch_finance.py 抓今日財報原始資料到 ~/ai_output/finance_raw.csv\n第二步（AI 技能）：讀取上一步 CSV 做月度毛利率/現金流趨勢分析，輸出 ~/ai_output/finance_report.xlsx\n第三步（人工確認）：暫停並透過 Telegram 通知我審核報表\n第四步（AI 技能）：把審核後的 Excel 轉成外商風格 PPT 簡報（掛載 pptx skill）' }
+    { role: 'assistant', content: '你好！請告訴我你想自動化的工作流程，我會幫你產生 Pipeline YAML 設定。\n\n（正在載入專案路徑資訊…）' }
   ])
+
+  // 載入專案實際路徑，把初始訊息中的路徑替換成真實可用的版本
+  useEffect(() => {
+    getEnvPaths().then(env => {
+      setMessages(prev => {
+        // 只替換初始那一條（仍是預設內容時）；使用者已有對話就不覆蓋
+        if (prev.length !== 1 || prev[0].role !== 'assistant') return prev
+        return [{ role: 'assistant', content: buildWelcomeMessage(env) }]
+      })
+    }).catch(() => {/* ignore — 沿用預設訊息 */})
+  }, [])
   const [input, setInput]     = useState('')
   const [loading, setLoading] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)

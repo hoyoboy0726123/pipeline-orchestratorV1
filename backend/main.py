@@ -244,6 +244,24 @@ async def get_available_models(refresh: bool = False):
     return payload
 
 
+# ── 專案環境路徑（給前端 AI 助手生成真實可用的範例）────────────
+@app.get("/env/paths")
+async def get_env_paths():
+    """回傳使用者目前專案的關鍵絕對路徑，讓前端範例能顯示真實可貼上執行的指令。"""
+    import os as _os
+    from pathlib import Path as _P
+    project_root = _P(__file__).parent.parent.absolute()
+    test_workflows = project_root / "test-workflows"
+    finance_dir = test_workflows / "finance"
+    return {
+        "project_root": str(project_root),
+        "test_workflows_dir": str(test_workflows) if test_workflows.is_dir() else None,
+        "has_finance_example": finance_dir.is_dir() and (finance_dir / "stage1_generate_transactions.py").is_file(),
+        "finance_example_dir": str(finance_dir) if finance_dir.is_dir() else None,
+        "path_sep": _os.sep,
+    }
+
+
 # ── Node.js 環境檢測 ────────────────────────────────────────
 _NODE_CACHE: dict = {"ts": 0.0, "data": None}
 _NODE_CACHE_TTL = 60.0

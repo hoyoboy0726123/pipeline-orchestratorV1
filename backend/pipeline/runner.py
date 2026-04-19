@@ -634,7 +634,7 @@ async def run_pipeline(
                     exit_code=exec_result.exit_code,
                     stdout=exec_result.stdout,
                     stderr=exec_result.stderr,
-                    output_path=step.output.path if step.output else None,
+                    output_path=(str(_resolve_path(step.output.path)) if (step.output and step.output.path) else None),
                     output_expect=step.output.get_expect() if step.output else None,
                     logger=logger,
                 )
@@ -648,7 +648,7 @@ async def run_pipeline(
                     exit_code=exec_result.exit_code,
                     stdout=exec_result.stdout,
                     stderr=exec_result.stderr,
-                    output_path=step.output.path if step.output else None,
+                    output_path=(str(_resolve_path(step.output.path)) if (step.output and step.output.path) else None),
                     output_expect=step.output.get_expect() if step.output else None,
                     logger=logger,
                 )

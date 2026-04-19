@@ -758,9 +758,30 @@ async def execute_step_with_skill(
     if output_path:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         # 刪除舊的 output 檔案，避免 done guard 被上次執行的殘留檔案騙過
-        if Path(output_path).exists():
+        # Windows 上使用者若開著 Excel 檢視輸出，unlink 會 PermissionError
+        # → 改成 rename 成 .stale-<timestamp>.bak 繞過鎖，並用 try/except 確保整個 step 不會因此卡死
+        _out = Path(output_path)
+        if _out.exists():
             logger.info(f"[{step_name}] 刪除舊輸出檔案：{output_path}")
-            Path(output_path).unlink()
+            try:
+                _out.unlink()
+            except PermissionError as _e:
+                import time as _t
+                _bak = _out.with_suffix(_out.suffix + f".stale-{int(_t.time())}.bak")
+                try:
+                    _out.rename(_bak)
+                    logger.warning(
+                        f"[{step_name}] 舊輸出檔案被佔用（可能你在 Excel 開著），"
+                        f"已改名為 {_bak.name} 讓這次執行繼續。請關閉 Excel 後手動清掉 .bak 檔。"
+                    )
+                except Exception as _e2:
+                    # rename 也失敗（極少見，通常是檔案被獨佔）→ 讓使用者知道但不中斷
+                    logger.warning(
+                        f"[{step_name}] 無法刪除或改名舊輸出檔案（{_out.name}）：{_e2.__class__.__name__}。"
+                        f"通常是 Excel / 其他程式正打開此檔。LLM 寫入時可能也會失敗，請先關閉該檔案再重跑。"
+                    )
+            except Exception as _e:
+                logger.warning(f"[{step_name}] 刪除舊輸出檔案時發生錯誤：{_e}")
     if working_dir:
         Path(working_dir).mkdir(parents=True, exist_ok=True)
 

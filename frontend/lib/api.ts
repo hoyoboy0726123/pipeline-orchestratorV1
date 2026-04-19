@@ -397,6 +397,20 @@ export interface SkillPackage {
   version: string
 }
 
+export interface EnvPaths {
+  project_root: string
+  test_workflows_dir: string | null
+  has_finance_example: boolean
+  finance_example_dir: string | null
+  path_sep: string
+}
+
+export async function getEnvPaths(): Promise<EnvPaths> {
+  const res = await fetchWithRetry(`${BASE}/env/paths`)
+  if (!res.ok) throw new Error('讀取專案路徑失敗')
+  return res.json()
+}
+
 export interface NodeStatus {
   node_installed: boolean
   node_version: string

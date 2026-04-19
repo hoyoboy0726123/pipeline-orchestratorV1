@@ -86,7 +86,7 @@ def _read_file_content(path: Optional[str]) -> dict:
     if not path:
         return result
 
-    p = Path(path).expanduser()
+    p = _resolve_user_path(path)
     if not p.exists():
         return result
 
@@ -354,11 +354,24 @@ Exit Code：{exit_code}
         )
 
 
+def _resolve_user_path(path: str) -> Path:
+    """統一處理使用者可能給的三種路徑：
+    - 絕對路徑 → 直接用
+    - `~/xxx` → 展開到使用者家目錄
+    - 相對路徑 → 以**專案根目錄**為基準（非 backend cwd），跟 runner 邏輯一致
+    """
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        _PROJ_ROOT = Path(__file__).parent.parent.parent.absolute()
+        p = _PROJ_ROOT / p
+    return p
+
+
 def _check_output_file(path: Optional[str]) -> str:
     """取得輸出檔案或目錄的基本資訊"""
     if not path:
         return "無需檢查"
-    p = Path(path).expanduser()
+    p = _resolve_user_path(path)
     if not p.exists():
         return "❌ 路徑不存在"
     if p.is_dir():
