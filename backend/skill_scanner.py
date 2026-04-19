@@ -162,6 +162,137 @@ def _extract_py_imports(py_file: Path) -> set[str]:
     return names
 
 
+# 常見系統 CLI 工具：被提及在 SKILL.md 即認定為外部依賴（使用者需自行安裝）
+_KNOWN_SYSTEM_TOOLS = {
+    "soffice": "LibreOffice",
+    "libreoffice": "LibreOffice",
+    "pdftoppm": "Poppler",
+    "pdftocairo": "Poppler",
+    "pdfinfo": "Poppler",
+    "ffmpeg": "FFmpeg",
+    "ffprobe": "FFmpeg",
+    "imagemagick": "ImageMagick",
+    "convert": "ImageMagick",
+    "magick": "ImageMagick",
+    "tesseract": "Tesseract OCR",
+    "wkhtmltopdf": "wkhtmltopdf",
+    "pandoc": "Pandoc",
+    "git": "Git",
+    "node": "Node.js",
+    "npm": "Node.js/npm",
+    "npx": "Node.js/npm",
+    "docker": "Docker",
+}
+
+
+_NPM_CACHE: dict = {"ts": 0.0, "data": set()}
+_NPM_CACHE_TTL = 60.0
+
+
+def list_global_npm_packages(force_refresh: bool = False) -> set[str]:
+    """跑 `npm list -g --depth=0 --json` 取得目前全域安裝的 npm 套件名（小寫）。
+    有 60 秒記憶體快取；找不到 npm 或執行失敗時回傳空集合。"""
+    import time as _time
+    import subprocess
+    import shutil as _shutil
+
+    if not force_refresh and (_time.time() - _NPM_CACHE["ts"]) < _NPM_CACHE_TTL and _NPM_CACHE["data"]:
+        return _NPM_CACHE["data"]
+
+    npm_cmd = _shutil.which("npm")
+    if not npm_cmd:
+        _NPM_CACHE["ts"] = _time.time()
+        _NPM_CACHE["data"] = set()
+        return set()
+    try:
+        proc = subprocess.run(
+            [npm_cmd, "list", "-g", "--depth=0", "--json"],
+            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="ignore",
+        )
+        data = json.loads(proc.stdout or "{}")
+        deps = data.get("dependencies") or {}
+        result = {name.lower() for name in deps.keys()}
+    except Exception:
+        result = set()
+    _NPM_CACHE["ts"] = _time.time()
+    _NPM_CACHE["data"] = result
+    return result
+
+
+def _parse_install_commands(text: str) -> tuple[list[str], list[str], list[str]]:
+    """
+    掃描 markdown 文字裡的依賴提示，回傳：
+    - pip 套件（來自 `pip install X` / `pip install "X[extra]"` 等）
+    - npm 套件（來自 `npm install X` / `npm install -g X`）
+    - 系統工具（來自反引號包住的 CLI 名稱 + 已知工具清單比對）
+    """
+    pip_pkgs: list[str] = []
+    npm_pkgs: list[str] = []
+    system_tools: set[str] = set()
+
+    # pip install：抓每條 install 指令後面的所有套件名（允許引號、extras、版本）
+    # 範例匹配："pip install pandas", 'pip install "markitdown[pptx]"', "pip install -U foo bar"
+    for m in re.finditer(r"\bpip\s+install\s+([^\n`]+)", text, re.IGNORECASE):
+        args = m.group(1)
+        for tok in re.findall(r'"([^"]+)"|\'([^\']+)\'|(\S+)', args):
+            pkg = next(filter(None, tok), "")
+            if not pkg or pkg.startswith("-"):
+                continue
+            # 略過 install 自己的子命令/路徑（--user, -U, requirements.txt 等）
+            if pkg in ("install", "pip") or pkg.startswith("."):
+                continue
+            if pkg.endswith(".txt"):
+                continue
+            pip_pkgs.append(pkg)
+
+    # npm install：同上
+    for m in re.finditer(r"\bnpm\s+install\s+([^\n`]+)", text, re.IGNORECASE):
+        args = m.group(1)
+        for tok in re.findall(r'"([^"]+)"|\'([^\']+)\'|(\S+)', args):
+            pkg = next(filter(None, tok), "")
+            if not pkg or pkg.startswith("-"):
+                continue
+            if pkg in ("install", "npm"):
+                continue
+            npm_pkgs.append(pkg)
+
+    # 系統工具：只認反引號包住的（`soffice`、`pdftoppm`）或括號內的（(`magick`)）
+    # 避免匹配到英文敘述裡的普通單字（例如 "Convert slides" 不該認作 ImageMagick）
+    for tool_name, display in _KNOWN_SYSTEM_TOOLS.items():
+        if re.search(rf"`{re.escape(tool_name)}`", text, re.IGNORECASE):
+            system_tools.add(display)
+
+    # 去重但保留順序
+    pip_pkgs = list(dict.fromkeys(pip_pkgs))
+    npm_pkgs = list(dict.fromkeys(npm_pkgs))
+    return pip_pkgs, npm_pkgs, sorted(system_tools)
+
+
+def _scan_markdown_dependencies(skill_dir: Path) -> tuple[list[str], list[str], list[str]]:
+    """讀 skill 根目錄的所有 .md 檔（SKILL.md + references/），合併依賴提示。"""
+    all_pip: list[str] = []
+    all_npm: list[str] = []
+    all_sys: set[str] = set()
+    md_files = list(skill_dir.glob("*.md"))
+    ref_dir = skill_dir / "references"
+    if ref_dir.is_dir():
+        md_files.extend(ref_dir.glob("*.md"))
+    for md in md_files:
+        try:
+            text = md.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        pip_pkgs, npm_pkgs, sys_tools = _parse_install_commands(text)
+        all_pip.extend(pip_pkgs)
+        all_npm.extend(npm_pkgs)
+        all_sys.update(sys_tools)
+    return (
+        list(dict.fromkeys(all_pip)),
+        list(dict.fromkeys(all_npm)),
+        sorted(all_sys),
+    )
+
+
 def scan_skill_dependencies(skill_name: str) -> dict:
     """
     掃描指定 skill 的依賴，回傳：
@@ -209,7 +340,17 @@ def scan_skill_dependencies(skill_name: str) -> dict:
         imp for imp in imports_detected
         if imp not in _STDLIB_MODULES and imp not in local_module_names and not imp.startswith("_")
     )
-    suggested_pip = [_PIP_NAME_MAP.get(m, m) for m in third_party]
+    suggested_pip_from_imports = [_PIP_NAME_MAP.get(m, m) for m in third_party]
+
+    # ── 從 SKILL.md 與參考 .md 文字中抽出 pip / npm / 系統工具 ──
+    md_pip, md_npm, system_tools = _scan_markdown_dependencies(skill_dir)
+
+    # 合併 pip：優先 requirements.txt → 程式 import → markdown
+    suggested_pip: list[str] = []
+    for pkg in requirements_txt + suggested_pip_from_imports + md_pip:
+        base = re.split(r"[<>=!~\[]", pkg)[0].strip()
+        if base and pkg not in suggested_pip:
+            suggested_pip.append(pkg)
 
     # ── Node.js 依賴 ─────────────────────────────────────
     package_json = None
@@ -219,6 +360,16 @@ def scan_skill_dependencies(skill_name: str) -> dict:
             package_json = json.loads(pkg_file.read_text(encoding="utf-8"))
         except Exception:
             package_json = None
+
+    # 合併 npm：package.json 的 dependencies + markdown 提示
+    suggested_npm: list[str] = list(md_npm)
+    if isinstance(package_json, dict):
+        for key in ("dependencies", "devDependencies"):
+            deps = package_json.get(key) or {}
+            if isinstance(deps, dict):
+                for name in deps:
+                    if name not in suggested_npm:
+                        suggested_npm.append(name)
 
     return {
         "skill_name": skill_name,
@@ -231,8 +382,10 @@ def scan_skill_dependencies(skill_name: str) -> dict:
         },
         "node": {
             "package_json": package_json,
-            "needs_npm_install": package_json is not None,
+            "needs_npm_install": package_json is not None or bool(md_npm),
+            "suggested_npm": suggested_npm,
         },
+        "system_tools": system_tools,
     }
 
 

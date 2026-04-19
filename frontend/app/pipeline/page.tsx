@@ -1009,11 +1009,12 @@ export default function PipelinePage() {
             onChange={e => setPipelineName(e.target.value)}
             onBlur={() => setEditingName(false)}
             onKeyDown={e => e.key === 'Enter' && setEditingName(false)}
-            className="text-sm font-medium border-b-2 border-indigo-400 outline-none bg-transparent text-gray-800 min-w-0 w-44"
+            className="text-sm font-medium border-b-2 border-indigo-400 outline-none bg-transparent text-gray-800 min-w-0 flex-1 max-w-[500px]"
           />
         ) : (
           <button onClick={() => setEditingName(true)}
-            className="text-sm font-medium text-gray-800 hover:text-indigo-600 transition-colors truncate max-w-[180px]">
+            title={pipelineName}
+            className="text-sm font-medium text-gray-800 hover:text-indigo-600 transition-colors whitespace-nowrap shrink-0">
             {pipelineName}
           </button>
         )}

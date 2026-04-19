@@ -11,9 +11,10 @@ import {
   analyzeRecentLogs,
   listAvailableSkills, scanSkillDependencies,
   scanUnlistedPackages, adoptExistingPackage,
+  getNodeStatus,
   type ModelSettings, type AvailableModels, type SkillPackage, type NotificationSettings,
   type LogSuggestion, type AvailableSkill, type SkillDependencies,
-  type UnlistedPackage,
+  type UnlistedPackage, type NodeStatus,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -160,7 +161,7 @@ function InstalledSkillsSection({ onInstallRequest }: { onInstallRequest: (pkg: 
                           {/* Node 依賴 */}
                           <div>
                             <div className="font-medium text-gray-700 mb-1.5">📦 Node.js 依賴</div>
-                            {deps.node?.needs_npm_install && deps.node.package_json ? (
+                            {deps.node?.package_json ? (
                               <div className="bg-red-50 border border-red-200 rounded px-2 py-2">
                                 <p className="text-red-700 font-medium mb-1">此 Skill 有 package.json，需要手動執行：</p>
                                 <code className="block bg-white px-2 py-1 rounded text-red-800">cd "{deps.path}" && npm install</code>
@@ -175,10 +176,58 @@ function InstalledSkillsSection({ onInstallRequest }: { onInstallRequest: (pkg: 
                                   </div>
                                 )}
                               </div>
+                            ) : deps.node?.suggested_npm && deps.node.suggested_npm.length > 0 ? (
+                              <div className="space-y-1.5">
+                                {deps.node.npm_available === false ? (
+                                  <div className="bg-gray-50 border border-gray-200 rounded px-2 py-2 text-gray-600">
+                                    <p className="mb-1">SKILL.md 提及需要以下 npm 套件，但系統找不到 <code className="bg-white px-1 rounded">npm</code>，無法判斷是否已安裝：</p>
+                                    <div className="flex flex-wrap gap-1">
+                                      {deps.node.suggested_npm.map(pkg => (
+                                        <code key={pkg} className="px-1.5 py-0.5 bg-white border border-gray-200 rounded">{pkg}</code>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <>
+                                    {deps.node.missing_npm && deps.node.missing_npm.length > 0 && (
+                                      <div className="bg-amber-50 border border-amber-200 rounded px-2 py-2">
+                                        <p className="text-amber-800 mb-1">尚未安裝（請在終端執行 <code className="bg-white px-1 rounded">npm install -g {deps.node.missing_npm.join(' ')}</code>）：</p>
+                                        <div className="flex flex-wrap gap-1">
+                                          {deps.node.missing_npm.map(pkg => (
+                                            <code key={pkg} className="px-1.5 py-0.5 bg-white border border-amber-200 rounded text-amber-900">{pkg}</code>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {deps.node.installed_npm && deps.node.installed_npm.length > 0 && (
+                                      <p className="text-green-600">✓ 已安裝（npm -g）：{deps.node.installed_npm.join(', ')}</p>
+                                    )}
+                                    {(!deps.node.missing_npm || deps.node.missing_npm.length === 0) &&
+                                     (!deps.node.installed_npm || deps.node.installed_npm.length === 0) && (
+                                      <p className="text-gray-400">無 Node.js 依賴</p>
+                                    )}
+                                  </>
+                                )}
+                              </div>
                             ) : (
                               <p className="text-gray-400">無 Node.js 依賴</p>
                             )}
                           </div>
+
+                          {/* 系統工具 */}
+                          {deps.system_tools && deps.system_tools.length > 0 && (
+                            <div>
+                              <div className="font-medium text-gray-700 mb-1.5">🛠 系統工具（需自行安裝）</div>
+                              <div className="flex flex-wrap gap-1.5">
+                                {deps.system_tools.map(tool => (
+                                  <span key={tool} className="px-2 py-0.5 bg-slate-100 border border-slate-300 rounded text-slate-700 text-[11px]">
+                                    {tool}
+                                  </span>
+                                ))}
+                              </div>
+                              <p className="mt-1 text-[11px] text-gray-400">這些工具無法透過 pip / npm 安裝，需到官網或用系統套件管理器（winget / brew / apt）取得。</p>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -652,14 +701,35 @@ export default function SettingsPage() {
   const [geminiThinking, setGeminiThinking] = useState<'off' | 'auto' | 'low' | 'medium' | 'high'>('off')
   const [orThinking, setOrThinking] = useState<'off' | 'on'>('off')
   const [loading, setLoading] = useState(true)
+  const [availableError, setAvailableError] = useState<string | null>(null)
+  const [reloadingModels, setReloadingModels] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [nodeStatus, setNodeStatus] = useState<NodeStatus | null>(null)
+
+  useEffect(() => {
+    getNodeStatus().then(setNodeStatus).catch(() => {})
+  }, [])
+
+  // 拆開兩個請求：current 是本地 JSON 很快、必要；available 要打 4 個外部 API 可能失敗
+  // available 失敗時仍讓使用者看到當前設定與 provider 切換，只把「載入失敗」侷限在模型下拉區
+  const loadAvailable = async () => {
+    setReloadingModels(true)
+    setAvailableError(null)
+    try {
+      const avail = await getAvailableModels()
+      setAvailable(avail)
+    } catch (e) {
+      setAvailableError((e as Error).message)
+    } finally {
+      setReloadingModels(false)
+    }
+  }
 
   const load = async () => {
     setLoading(true)
     try {
-      const [cur, avail] = await Promise.all([getModelSettings(), getAvailableModels()])
+      const cur = await getModelSettings()
       setCurrent(cur)
-      setAvailable(avail)
       setProvider(cur.provider)
       setModel(cur.model)
       setOllamaUrl(cur.ollama_base_url || 'http://localhost:11434')
@@ -672,6 +742,8 @@ export default function SettingsPage() {
     } finally {
       setLoading(false)
     }
+    // 背景載入可用模型清單；失敗不影響設定頁其他部分
+    loadAvailable()
   }
 
   useEffect(() => { load() }, [])
@@ -739,6 +811,37 @@ export default function SettingsPage() {
             <p className="text-sm text-gray-500">調整 Pipeline 執行與驗證時使用的 LLM 模型</p>
           </div>
         </div>
+
+        {/* Node.js 環境警示（優先顯示，很多 skill 靠 npm 套件） */}
+        {nodeStatus && !nodeStatus.node_installed && (
+          <div className="mb-6 bg-red-50 border border-red-200 rounded-xl p-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-red-800 mb-1">系統找不到 Node.js</div>
+                <p className="text-xs text-red-700 leading-relaxed mb-2">
+                  部分 Agent Skill（例如 <code className="bg-white px-1 rounded">pptx</code>）需要 <code className="bg-white px-1 rounded">npm</code> 套件（<code className="bg-white px-1 rounded">pptxgenjs</code> 等）才能完整運作。沒有 Node.js 會導致這些 Skill 執行失敗。
+                </p>
+                <p className="text-xs text-red-700">
+                  安裝方式：<span className="break-all">{nodeStatus.install_hint}</span>
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+        {nodeStatus && nodeStatus.node_installed && !nodeStatus.npm_installed && (
+          <div className="mb-6 bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-amber-800 mb-1">Node.js 已安裝但找不到 npm</div>
+                <p className="text-xs text-amber-700">
+                  Node.js ({nodeStatus.node_version}) 已偵測到，但無法找到 <code className="bg-white px-1 rounded">npm</code> 指令。請重新安裝 Node.js LTS 版本或確認 npm 已加入 PATH。
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {loading ? (
           <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400">
@@ -974,10 +1077,22 @@ export default function SettingsPage() {
                 {provider === 'groq' && <span className="text-xs text-gray-400 ml-2">（從 Groq API 動態取得）</span>}
                 {provider === 'gemini' && <span className="text-xs text-gray-400 ml-2">（從 Google API 動態取得）</span>}
                 {provider === 'openrouter' && <span className="text-xs text-gray-400 ml-2">（僅列出免費模型）</span>}
+                {reloadingModels && <span className="text-xs text-indigo-500 ml-2"><Loader2 className="w-3 h-3 animate-spin inline mr-1" />載入中…</span>}
               </label>
-              {options.length === 0 ? (
+              {availableError ? (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                  <div className="font-medium mb-1">模型清單載入失敗</div>
+                  <div className="text-xs mb-2 break-all">{availableError}</div>
+                  <button onClick={loadAvailable} disabled={reloadingModels}
+                    className="text-xs px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50">
+                    {reloadingModels ? '重試中…' : '重試'}
+                  </button>
+                </div>
+              ) : options.length === 0 ? (
                 <div className="p-4 bg-gray-50 rounded-lg text-sm text-gray-500 text-center">
-                  {provider === 'ollama' ? '尚未發現任何 Ollama 本地模型' : '無可用模型'}
+                  {provider === 'ollama'
+                    ? (available?.ollama_error ? `尚未發現 Ollama 模型：${available.ollama_error}` : '尚未發現任何 Ollama 本地模型')
+                    : reloadingModels ? '載入中…' : '無可用模型'}
                 </div>
               ) : (
                 <div className="space-y-2 max-h-96 overflow-y-auto">

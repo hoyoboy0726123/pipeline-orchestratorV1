@@ -563,12 +563,21 @@ async def run_pipeline(
         # 定義專案根目錄 (backend/pipeline/runner.py 的上三層)
         _PROJ_ROOT = _Path(__file__).parent.parent.parent.absolute()
 
+        def _resolve_path(p: str) -> _Path:
+            """把 output.path 解析成絕對路徑：
+            - `~/xxx` 展開到使用者家目錄
+            - 絕對路徑直接用
+            - 相對路徑 → 以**專案根目錄**為基準（而非 backend cwd）"""
+            pp = _Path(p).expanduser()
+            if not pp.is_absolute():
+                pp = _PROJ_ROOT / pp
+            return pp
+
         # 預設：專案根目錄/ai_output/{pipeline_name}/
         default_wd = str(_PROJ_ROOT / "ai_output" / config.name)
         wd = step.working_dir
         if not wd and step.output and step.output.path:
-            # 展開路徑中的 ~ (如果有的話)
-            wd = str(_Path(step.output.path).expanduser().parent)
+            wd = str(_resolve_path(step.output.path).parent)
         if not wd:
             wd = default_wd
         _Path(wd).mkdir(parents=True, exist_ok=True)
@@ -578,12 +587,14 @@ async def run_pipeline(
             if step.skill_mode:
                 # recipe key 使用「索引:名稱」避免同名步驟互相覆蓋
                 recipe_step_key = f"{step_num}:{step.name}"
+                # 把 output_path 解析成絕對路徑傳給 LLM，避免 LLM 搞不清楚相對於哪個 cwd
+                _resolved_out = str(_resolve_path(step.output.path)) if (step.output and step.output.path) else None
                 exec_result = await execute_step_with_skill(
                     task_description=step.batch,
                     timeout=step.timeout,
                     logger=logger,
                     step_name=step.name,
-                    output_path=step.output.path if step.output else None,
+                    output_path=_resolved_out,
                     working_dir=wd,
                     prev_outputs=completed_outputs if completed_outputs else None,
                     pipeline_id=workflow_id or config.name,

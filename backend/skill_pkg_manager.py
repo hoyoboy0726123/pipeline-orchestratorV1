@@ -3,9 +3,48 @@ Skill 套件管理器 — 管理 AI技能節點可用的 Python 第三方套件
 """
 import subprocess
 import sys
+import time
+import json as _json
 from pathlib import Path
+from threading import Lock
 
 _PKG_FILE = Path(__file__).parent / "skill_packages.txt"
+
+# ── pip list 快取（一次抓全部，避免對每個套件各呼叫 pip show）──
+_PIP_CACHE: dict = {"ts": 0.0, "data": {}}  # {"pandas": {"version": "2.0", "installed": True}, ...}
+_PIP_CACHE_TTL = 60.0  # 秒
+_PIP_CACHE_LOCK = Lock()
+
+
+def _pip_snapshot(force_refresh: bool = False) -> dict[str, dict]:
+    """用單次 `pip list --format=json` 取得所有已安裝套件（名稱小寫 → {version}）。
+    有 60s 快取，大幅避免 Windows 上 subprocess spawn 的開銷。"""
+    with _PIP_CACHE_LOCK:
+        if not force_refresh and (time.time() - _PIP_CACHE["ts"]) < _PIP_CACHE_TTL and _PIP_CACHE["data"]:
+            return _PIP_CACHE["data"]
+        snapshot: dict[str, dict] = {}
+        try:
+            r = subprocess.run(
+                [sys.executable, "-m", "pip", "list", "--format=json"],
+                capture_output=True, text=True, timeout=20,
+            )
+            if r.returncode == 0:
+                for item in _json.loads(r.stdout or "[]"):
+                    name = str(item.get("name") or "").lower()
+                    if name:
+                        snapshot[name] = {"version": str(item.get("version") or "")}
+        except Exception:
+            pass
+        _PIP_CACHE["ts"] = time.time()
+        _PIP_CACHE["data"] = snapshot
+        return snapshot
+
+
+def _invalidate_pip_cache() -> None:
+    """安裝/移除套件後呼叫，確保下次讀到最新狀態。"""
+    with _PIP_CACHE_LOCK:
+        _PIP_CACHE["ts"] = 0.0
+        _PIP_CACHE["data"] = {}
 
 
 def _read_packages() -> list[str]:
@@ -27,18 +66,9 @@ def _write_packages(packages: list[str]) -> None:
 
 
 def _is_installed(pkg_name: str) -> bool:
-    """檢查套件是否已安裝"""
-    # 套件名可能有 extras (e.g. "uvicorn[standard]") 或版本 (e.g. "pandas==2.0")
-    # 只取基礎名稱
-    base = pkg_name.split("[")[0].split("=")[0].split(">")[0].split("<")[0].strip()
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "show", base],
-            capture_output=True, text=True, timeout=10,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+    """檢查套件是否已安裝（走快照，不呼叫 subprocess）"""
+    base = pkg_name.split("[")[0].split("=")[0].split(">")[0].split("<")[0].strip().lower()
+    return base in _pip_snapshot()
 
 
 def _pip_install(pkg_name: str) -> tuple[bool, str]:
@@ -88,26 +118,15 @@ def auto_install_packages() -> None:
 
 
 def list_packages() -> list[dict]:
-    """列出所有 skill 套件及安裝狀態"""
+    """列出所有 skill 套件及安裝狀態（全部走一次 pip list 快照，~200ms 內完成）"""
     packages = _read_packages()
+    snapshot = _pip_snapshot()
     result = []
     for pkg in packages:
-        base = pkg.split("[")[0].split("=")[0].split(">")[0].split("<")[0].strip()
-        installed = _is_installed(pkg)
-        # 取得版本
-        version = ""
-        if installed:
-            try:
-                r = subprocess.run(
-                    [sys.executable, "-m", "pip", "show", base],
-                    capture_output=True, text=True, timeout=10,
-                )
-                for line in r.stdout.splitlines():
-                    if line.startswith("Version:"):
-                        version = line.split(":", 1)[1].strip()
-                        break
-            except Exception:
-                pass
+        base = pkg.split("[")[0].split("=")[0].split(">")[0].split("<")[0].strip().lower()
+        info = snapshot.get(base)
+        installed = info is not None
+        version = info.get("version", "") if info else ""
         result.append({
             "name": pkg,
             "installed": installed,
@@ -136,9 +155,10 @@ def add_package(pkg_name: str) -> tuple[bool, str]:
     if not ok:
         return False, msg
 
-    # 寫入清單
+    # 寫入清單 + 讓快取失效
     packages.append(pkg_name)
     _write_packages(packages)
+    _invalidate_pip_cache()
     return True, msg
 
 
@@ -164,8 +184,9 @@ def remove_package(pkg_name: str) -> tuple[bool, str]:
     # 解除安裝
     _pip_uninstall(pkg_name)
 
-    # 更新清單
+    # 更新清單 + 讓快取失效
     _write_packages(new_packages)
+    _invalidate_pip_cache()
     return True, f"✅ {pkg_name} 已從清單移除並解除安裝"
 
 

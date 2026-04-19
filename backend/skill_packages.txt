@@ -17,8 +17,6 @@ yfinance
 selenium
 mss
 pywin32
-office
 defusedxml
-helpers
 lxml
-validators
+markitdown[pptx]

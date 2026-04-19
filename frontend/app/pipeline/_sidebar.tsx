@@ -21,6 +21,7 @@ interface ChatMsg {
   content: string
   hasYaml?: boolean
   yaml?: string | null
+  yamlError?: string | null
 }
 
 // ── Countdown Hook ──────────────────────────────────────────────────────────
@@ -82,7 +83,20 @@ function WorkflowItem({
   useEffect(() => { if (editing) inputRef.current?.focus() }, [editing])
   useEffect(() => { setDraft(name) }, [name])
 
-  const commit = () => { onRename(draft.trim() || name); setEditing(false) }
+  const commit = () => {
+    const newName = draft.trim()
+    if (!newName || newName === name) { setEditing(false); return }
+    const ok = confirm(
+      `確定要把「${name}」改成「${newName}」嗎？\n\n` +
+      `⚠️ 注意：\n` +
+      `• 若步驟有使用「預設輸出路徑」（沒手動指定），下次執行會改寫到 ai_output/${newName}/ 資料夾，舊檔案不會搬過去\n` +
+      `• 若後續步驟依賴前一步驟的輸出，可能因路徑改變導致 Recipe 快取失效，需要重新生成\n\n` +
+      `建議：改名前最好所有節點都已明確指定「輸出路徑」。`
+    )
+    if (!ok) { setDraft(name); setEditing(false); return }
+    onRename(newName)
+    setEditing(false)
+  }
 
   const countdown = useCountdown(nextRun)
 
@@ -114,7 +128,7 @@ function WorkflowItem({
             onClick={e => e.stopPropagation()}
           />
         ) : (
-          <p className={`text-sm font-medium truncate ${active ? 'text-indigo-700' : 'text-gray-700'}`}>{name}</p>
+          <p title={name} className={`text-sm font-medium truncate ${active ? 'text-indigo-700' : 'text-gray-700'}`}>{name}</p>
         )}
         {runStatus === 'running' ? (
           <p className="text-xs text-indigo-500 font-medium mt-0.5 flex items-center gap-1">
@@ -188,15 +202,53 @@ interface SidebarProps {
   onYamlApply: (yaml: string) => void
 }
 
+const SIDEBAR_WIDTH_KEY = 'pipeline-sidebar-width'
+const SIDEBAR_MIN_WIDTH = 256
+const SIDEBAR_MAX_WIDTH = 560
+const SIDEBAR_DEFAULT_WIDTH = 256
+
 export default function Sidebar({ onYamlApply }: SidebarProps) {
   const {
     workflows, activeId,
     createWorkflow, updateWorkflow, removeWorkflow, setActive,
   } = useWorkflowStore()
 
+  // ── 拖曳調寬 ─────────────────────────────────────────────────────
+  const [width, setWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
+  const [resizing, setResizing] = useState(false)
+  useEffect(() => {
+    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY))
+    if (saved >= SIDEBAR_MIN_WIDTH && saved <= SIDEBAR_MAX_WIDTH) setWidth(saved)
+  }, [])
+  useEffect(() => {
+    if (!resizing) return
+    const onMove = (e: MouseEvent) => {
+      const w = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, e.clientX))
+      setWidth(w)
+    }
+    const onUp = () => {
+      setResizing(false)
+      try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width)) } catch {}
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [resizing, width])
+  // 停止拖曳時寫入最新寬度
+  useEffect(() => {
+    if (resizing) return
+    try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width)) } catch {}
+  }, [width, resizing])
+
   const [showChat, setShowChat] = useState(false)
+  const [showNameModal, setShowNameModal] = useState(false)
+  const [newName, setNewName] = useState('')
+  const nameInputRef = useRef<HTMLInputElement>(null)
   const [messages, setMessages] = useState<ChatMsg[]>([
-    { role: 'assistant', content: '你好！請告訴我你想自動化的工作流程，我會幫你產生 Pipeline YAML 設定。\n\n**範例 1（AI 技能）**\n把 ~/data/report.xlsx（或上一步產生的資料）整理好，加上格線、自動換行，儲存到 ~/ai_output/formatted_report.xlsx\n\n**範例 2（Python 腳本串接）**\n第一步：執行 ~/scripts/fetch_data.py，輸出到 ~/ai_output/raw.csv\n第二步：執行 ~/scripts/analyze.py，讀取上一步的 csv，輸出到 ~/ai_output/result.xlsx' }
+    { role: 'assistant', content: '你好！請告訴我你想自動化的工作流程，我會幫你產生 Pipeline YAML 設定。\n\n**範例 1（Python 腳本串接）**\n第一步：執行 ~/scripts/fetch_data.py，輸出到 ~/ai_output/raw.csv\n第二步：執行 ~/scripts/analyze.py，讀取上一步的 csv，輸出到 ~/ai_output/result.xlsx\n\n**範例 2（AI 技能）**\n把 ~/data/report.xlsx（或上一步產生的資料）整理好，加上格線、自動換行，儲存到 ~/ai_output/formatted_report.xlsx\n\n**範例 3（三種節點組合・財務分析）**\n第一步（Python 腳本）：執行 ~/scripts/fetch_finance.py 抓今日財報原始資料到 ~/ai_output/finance_raw.csv\n第二步（AI 技能）：讀取上一步 CSV 做月度毛利率/現金流趨勢分析，輸出 ~/ai_output/finance_report.xlsx\n第三步（人工確認）：暫停並透過 Telegram 通知我審核報表\n第四步（AI 技能）：把審核後的 Excel 轉成外商風格 PPT 簡報（掛載 pptx skill）' }
   ])
   const [input, setInput]     = useState('')
   const [loading, setLoading] = useState(false)
@@ -285,9 +337,13 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
       } catch { /* localStorage 讀取失敗不中斷 */ }
 
       // 2) 從 API 載入
-      await useWorkflowStore.getState().fetchWorkflows()
-      if (useWorkflowStore.getState().workflows.length === 0) {
-        await createWorkflow('我的第一個工作流')
+      try {
+        await useWorkflowStore.getState().fetchWorkflows()
+        if (useWorkflowStore.getState().workflows.length === 0) {
+          await createWorkflow('我的第一個工作流')
+        }
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : '後端連線失敗')
       }
     }
     init()
@@ -295,9 +351,13 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
 
   const handleDelete = async (id: string, name: string) => {
     if (!confirm(`確定刪除「${name}」？此操作會一併刪除相關的 Recipe 和執行紀錄。`)) return
-    await removeWorkflow(id)
-    if (useWorkflowStore.getState().workflows.length === 0) {
-      await createWorkflow('新工作流')
+    try {
+      await removeWorkflow(id)
+      if (useWorkflowStore.getState().workflows.length === 0) {
+        await createWorkflow('新工作流')
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '刪除失敗')
     }
   }
 
@@ -360,8 +420,12 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
           content: res.reply,
           hasYaml: res.has_yaml,
           yaml: res.yaml_content,
+          yamlError: res.yaml_error ?? null,
         },
       ])
+      if (res.yaml_error) {
+        toast.error(`產生的 YAML 有語法問題：${res.yaml_error.slice(0, 120)}`)
+      }
     } catch (e) {
       toast.error('AI 回應失敗')
     } finally {
@@ -369,8 +433,63 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
     }
   }
 
+  const submitCreate = async () => {
+    const name = newName.trim()
+    if (!name) { toast.error('名稱不能為空'); return }
+    setShowNameModal(false)
+    try {
+      await createWorkflow(name)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '建立失敗，請稍後再試')
+    }
+  }
+
   return (
-    <div className="w-64 shrink-0 h-full flex flex-col bg-white border-r border-gray-200 overflow-hidden">
+    <div
+      className="shrink-0 h-full flex flex-col bg-white border-r border-gray-200 overflow-hidden relative"
+      style={{ width, userSelect: resizing ? 'none' : undefined }}
+    >
+      {/* ── Resize Handle（右邊界） ── */}
+      <div
+        onMouseDown={(e) => { e.preventDefault(); setResizing(true) }}
+        onDoubleClick={() => setWidth(SIDEBAR_DEFAULT_WIDTH)}
+        title="拖曳調整寬度・雙擊還原"
+        className={`absolute top-0 right-0 bottom-0 w-1 cursor-col-resize z-30 transition-colors ${
+          resizing ? 'bg-indigo-400' : 'hover:bg-indigo-300'
+        }`}
+      />
+
+      {/* ── 新增工作流：命名對話框 ── */}
+      {showNameModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowNameModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-[420px] p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-gray-800 mb-1">新增工作流</h3>
+            <p className="text-xs text-gray-500 mb-4">為工作流命名（也可之後重新命名）</p>
+            <input
+              ref={nameInputRef}
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') submitCreate(); if (e.key === 'Escape') setShowNameModal(false) }}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400/20"
+              placeholder="工作流名稱"
+            />
+            <div className="mt-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs leading-relaxed">
+              <div className="font-medium text-amber-800 mb-1">⚠️ 關於名稱的提醒</div>
+              <ul className="text-amber-700 space-y-0.5 ml-4 list-disc">
+                <li>名稱會成為「預設輸出資料夾」的路徑（<code className="font-mono">ai_output/名稱/</code>）</li>
+                <li>未來改名會造成預設路徑變更，可能導致 Recipe 快取失效、舊檔案留在舊路徑</li>
+                <li>建議：取一個穩定的名字，每個節點都**明確指定輸出路徑**以避免後續問題</li>
+              </ul>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setShowNameModal(false)}
+                className="px-4 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50">取消</button>
+              <button onClick={submitCreate}
+                className="px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">建立</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Logo ── */}
       <div className="flex items-center gap-2.5 px-4 py-4 border-b border-gray-100">
@@ -397,7 +516,15 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
       {/* ── New / Import Workflow Buttons ── */}
       <div className="px-3 pt-3 pb-2 flex gap-1.5">
         <button
-          onClick={() => { createWorkflow('新工作流') }}
+          onClick={() => {
+            const existingNames = new Set(workflows.map(w => w.name))
+            let suggested = '新工作流'
+            let i = 1
+            while (existingNames.has(suggested)) { suggested = `新工作流(${i})`; i++ }
+            setNewName(suggested)
+            setShowNameModal(true)
+            setTimeout(() => nameInputRef.current?.select(), 50)
+          }}
           className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 text-white rounded-xl text-xs font-medium hover:bg-indigo-700 transition-colors shadow-sm"
         >
           <Plus className="w-3.5 h-3.5" />
@@ -436,8 +563,16 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
         ))}
       </div>
 
-      {/* ── AI Assistant Section ── */}
-      <div className="border-t border-gray-100 flex flex-col" style={{ maxHeight: showChat ? '360px' : undefined }}>
+      {/* ── AI Assistant Section ──
+          展開時以 absolute 覆蓋在 sidebar 下緣，佔 75% 高度（約蓋住工作流列表），收合時回到底部單列按鈕
+      */}
+      <div
+        className={
+          showChat
+            ? 'absolute inset-x-0 bottom-0 top-1/4 bg-white border-t border-gray-100 flex flex-col z-20 shadow-lg'
+            : 'border-t border-gray-100 flex flex-col'
+        }
+      >
         {/* Toggle button */}
         <button
           onClick={() => setShowChat(!showChat)}
@@ -455,7 +590,7 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
         {showChat && (
           <div className="flex flex-col flex-1 min-h-0 border-t border-gray-100">
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-2.5 space-y-2.5" style={{ maxHeight: '240px' }}>
+            <div className="flex-1 overflow-y-auto p-2.5 space-y-2.5">
               {messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   {msg.role === 'assistant' && (
@@ -475,15 +610,25 @@ export default function Sidebar({ onYamlApply }: SidebarProps) {
                     ) : (
                       <span className="whitespace-pre-wrap">{msg.content}</span>
                     )}
+                    {msg.hasYaml && msg.yamlError && (
+                      <div className="mt-1.5 p-2 rounded-lg bg-red-50 border border-red-200 text-[11px] text-red-700 leading-relaxed">
+                        ⚠️ YAML 有問題，建議請 AI 修正後再套用：<br/>
+                        <code className="break-all">{msg.yamlError}</code>
+                      </div>
+                    )}
                     {msg.hasYaml && msg.yaml && (
                       <button
                         onClick={() => {
                           onYamlApply(msg.yaml!)
                           toast.success('YAML 已套用到畫布')
                         }}
-                        className="mt-1.5 w-full flex items-center justify-center gap-1 py-1 bg-indigo-500 hover:bg-indigo-400 text-white rounded-lg text-xs font-medium transition-colors"
+                        className={`mt-1.5 w-full flex items-center justify-center gap-1 py-1 rounded-lg text-xs font-medium transition-colors ${
+                          msg.yamlError
+                            ? 'bg-amber-500 hover:bg-amber-400 text-white'
+                            : 'bg-indigo-500 hover:bg-indigo-400 text-white'
+                        }`}
                       >
-                        套用到畫布 →
+                        {msg.yamlError ? '仍要套用（有語法錯誤）→' : '套用到畫布 →'}
                       </button>
                     )}
                   </div>

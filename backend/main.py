@@ -95,11 +95,22 @@ async def put_model_settings(req: ModelSettingsRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# ── models/available 快取：4 個外部 API 每次都打太慢，5 分鐘記憶體快取 ──
+_MODELS_CACHE: dict = {"ts": 0.0, "data": None}
+_MODELS_CACHE_TTL = 300.0  # 秒
+
+
 @app.get("/settings/models/available")
-async def get_available_models():
-    """動態列出各 provider 可用模型。"""
+async def get_available_models(refresh: bool = False):
+    """動態列出各 provider 可用模型。有 5 分鐘快取，加 ?refresh=true 強制更新。"""
+    import time as _time
+    import asyncio as _asyncio
     import httpx
     from config import GROQ_API_KEY as _groq_key, GEMINI_API_KEY as _gemini_key, OPENROUTER_API_KEY as _or_key
+
+    # 命中快取直接回，~5ms
+    if not refresh and _MODELS_CACHE["data"] and (_time.time() - _MODELS_CACHE["ts"]) < _MODELS_CACHE_TTL:
+        return _MODELS_CACHE["data"]
 
     ollama_models: list[dict] = []
     ollama_error: Optional[str] = None
@@ -117,15 +128,18 @@ async def get_available_models():
     except Exception:
         pass
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        # ── Groq（動態取得真實模型清單）──
-        if _groq_key:
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        # ── 每個 provider 包成獨立 coroutine，用 asyncio.gather 併發 ──
+        async def fetch_groq() -> tuple[list[dict], Optional[str]]:
+            if not _groq_key:
+                return [], "未設定 GROQ_API_KEY"
             try:
                 r = await client.get(
                     "https://api.groq.com/openai/v1/models",
                     headers={"Authorization": f"Bearer {_groq_key}"},
                 )
                 r.raise_for_status()
+                models = []
                 for m in r.json().get("data", []):
                     mid = m.get("id", "")
                     if not m.get("active", True):
@@ -140,20 +154,21 @@ async def get_available_models():
                         if ctx:
                             label += f", ctx={ctx // 1024}K"
                         label += "）"
-                    groq_models.append({"id": mid, "label": label})
-                groq_models.sort(key=lambda x: x["id"])
+                    models.append({"id": mid, "label": label})
+                models.sort(key=lambda x: x["id"])
+                return models, None
             except Exception as e:
-                groq_error = f"Groq API 錯誤：{e}"
-        else:
-            groq_error = "未設定 GROQ_API_KEY"
+                return [], f"Groq API 錯誤：{e}"
 
-        # ── Gemini（從 Google API 取得可用模型）──
-        if _gemini_key:
+        async def fetch_gemini() -> tuple[list[dict], Optional[str]]:
+            if not _gemini_key:
+                return [], "未設定 GEMINI_API_KEY"
             try:
                 r = await client.get(
                     f"https://generativelanguage.googleapis.com/v1beta/models?key={_gemini_key}",
                 )
                 r.raise_for_status()
+                models = []
                 for m in r.json().get("models", []):
                     mid = m.get("name", "").replace("models/", "")
                     if not any(mid.startswith(p) for p in _GEMINI_TEXT_PREFIXES):
@@ -165,58 +180,55 @@ async def get_available_models():
                     label = display
                     if supports_thinking:
                         label += "（支援思考）"
-                    gemini_models.append({
-                        "id": mid,
-                        "label": label,
-                        "supports_thinking": supports_thinking,
-                    })
-                gemini_models.sort(key=lambda x: x["id"])
+                    models.append({"id": mid, "label": label, "supports_thinking": supports_thinking})
+                models.sort(key=lambda x: x["id"])
+                return models, None
             except Exception as e:
-                gemini_error = f"Gemini API 錯誤：{e}"
-        else:
-            gemini_error = "未設定 GEMINI_API_KEY"
+                return [], f"Gemini API 錯誤：{e}"
 
-        # ── OpenRouter（免費模型）──
-        try:
-            r = await client.get("https://openrouter.ai/api/v1/models")
-            r.raise_for_status()
-            for m in r.json().get("data", []):
-                pricing = m.get("pricing", {})
-                if str(pricing.get("prompt", "1")) != "0" or str(pricing.get("completion", "1")) != "0":
-                    continue
-                mid = m.get("id", "")
-                ctx = m.get("context_length", 0)
-                name = m.get("name", mid)
-                label = name
-                if ctx:
-                    label += f"（ctx={ctx // 1024}K）"
-                openrouter_models.append({
-                    "id": mid,
-                    "label": label,
-                    "context_length": ctx,
-                })
-            openrouter_models.sort(key=lambda x: x["id"])
-        except Exception as e:
-            openrouter_error = f"OpenRouter API 錯誤：{e}"
+        async def fetch_openrouter() -> tuple[list[dict], Optional[str]]:
+            try:
+                r = await client.get("https://openrouter.ai/api/v1/models")
+                r.raise_for_status()
+                models = []
+                for m in r.json().get("data", []):
+                    pricing = m.get("pricing", {})
+                    if str(pricing.get("prompt", "1")) != "0" or str(pricing.get("completion", "1")) != "0":
+                        continue
+                    mid = m.get("id", "")
+                    ctx = m.get("context_length", 0)
+                    name = m.get("name", mid)
+                    label = name
+                    if ctx:
+                        label += f"（ctx={ctx // 1024}K）"
+                    models.append({"id": mid, "label": label, "context_length": ctx})
+                models.sort(key=lambda x: x["id"])
+                return models, None
+            except Exception as e:
+                return [], f"OpenRouter API 錯誤：{e}"
 
-        # ── Ollama ──
-        try:
-            r = await client.get(f"{base_url.rstrip('/')}/api/tags", timeout=3.0)
-            r.raise_for_status()
-            for m in r.json().get("models", []):
-                name = m.get("name") or m.get("model")
-                if not name:
-                    continue
-                size = m.get("size", 0)
-                size_gb = f"{size / 1024 / 1024 / 1024:.1f} GB" if size else ""
-                ollama_models.append({
-                    "id": name,
-                    "label": f"{name}" + (f"（{size_gb}）" if size_gb else ""),
-                })
-        except Exception as e:
-            ollama_error = f"無法連線 Ollama（{base_url}）：{e}"
+        async def fetch_ollama() -> tuple[list[dict], Optional[str]]:
+            try:
+                r = await client.get(f"{base_url.rstrip('/')}/api/tags", timeout=2.0)
+                r.raise_for_status()
+                models = []
+                for m in r.json().get("models", []):
+                    name = m.get("name") or m.get("model")
+                    if not name:
+                        continue
+                    size = m.get("size", 0)
+                    size_gb = f"{size / 1024 / 1024 / 1024:.1f} GB" if size else ""
+                    models.append({"id": name, "label": f"{name}" + (f"（{size_gb}）" if size_gb else "")})
+                return models, None
+            except Exception as e:
+                return [], f"無法連線 Ollama（{base_url}）：{e}"
 
-    return {
+        # 四條 coroutine 一口氣併發執行，總時間 ≈ max 而不是 sum
+        (groq_models, groq_error), (gemini_models, gemini_error), \
+        (openrouter_models, openrouter_error), (ollama_models, ollama_error) = \
+            await _asyncio.gather(fetch_groq(), fetch_gemini(), fetch_openrouter(), fetch_ollama())
+
+    payload = {
         "groq": groq_models,
         "groq_error": groq_error,
         "gemini": gemini_models,
@@ -227,6 +239,47 @@ async def get_available_models():
         "ollama_base_url": base_url,
         "ollama_error": ollama_error,
     }
+    _MODELS_CACHE["ts"] = _time.time()
+    _MODELS_CACHE["data"] = payload
+    return payload
+
+
+# ── Node.js 環境檢測 ────────────────────────────────────────
+_NODE_CACHE: dict = {"ts": 0.0, "data": None}
+_NODE_CACHE_TTL = 60.0
+
+
+@app.get("/settings/node-status")
+async def get_node_status():
+    """檢查系統是否安裝 Node.js / npm，含版本號。有 60s 快取。"""
+    import time as _time
+    import subprocess
+    import shutil as _shutil
+    if _NODE_CACHE["data"] and (_time.time() - _NODE_CACHE["ts"]) < _NODE_CACHE_TTL:
+        return _NODE_CACHE["data"]
+
+    def _probe(cmd: str) -> tuple[bool, str]:
+        exe = _shutil.which(cmd)
+        if not exe:
+            return False, ""
+        try:
+            r = subprocess.run([exe, "-v"], capture_output=True, text=True, timeout=5)
+            return (r.returncode == 0), (r.stdout or "").strip()
+        except Exception:
+            return False, ""
+
+    node_ok, node_ver = _probe("node")
+    npm_ok, npm_ver = _probe("npm")
+    payload = {
+        "node_installed": node_ok,
+        "node_version": node_ver,
+        "npm_installed": npm_ok,
+        "npm_version": npm_ver,
+        "install_hint": "https://nodejs.org/ 下載 LTS 版本；或執行 `winget install OpenJS.NodeJS.LTS`（Windows）",
+    }
+    _NODE_CACHE["ts"] = _time.time()
+    _NODE_CACHE["data"] = payload
+    return payload
 
 
 # ── Skill Packages ──────────────────────────────────────────
@@ -300,11 +353,34 @@ async def scan_skill_deps(skill_name: str):
         raise HTTPException(status_code=404, detail=f"找不到 skill：{skill_name}")
     # 加上目前已安裝的 pip 套件，前端可對照
     # list_packages() 回傳 list[dict]，每個 dict 有 {name, installed, version}
+    import re as _re
     from skill_pkg_manager import list_packages
-    installed_names = {p["name"].lower() for p in list_packages() if p.get("installed")}
+
+    def _base_name(pkg: str) -> str:
+        # 去掉版本指定與 extras：`markitdown[pptx]>=1.0` → `markitdown`
+        return _re.split(r"[<>=!~\[]", pkg)[0].strip().lower()
+
+    # 兩邊都 normalize 成 base name 再比對
+    installed_bases = {_base_name(p["name"]) for p in list_packages() if p.get("installed")}
     suggested = result["python"]["suggested_pip"]
-    result["python"]["installed"] = sorted(s for s in suggested if s.lower() in installed_names)
-    result["python"]["missing"] = [s for s in suggested if s.lower() not in installed_names]
+
+    result["python"]["installed"] = sorted(s for s in suggested if _base_name(s) in installed_bases)
+    result["python"]["missing"] = [s for s in suggested if _base_name(s) not in installed_bases]
+
+    # npm 套件也做已安裝對比（跑 `npm list -g`）
+    from skill_scanner import list_global_npm_packages
+    suggested_npm = result.get("node", {}).get("suggested_npm") or []
+    if suggested_npm:
+        global_npm = list_global_npm_packages()
+        if global_npm:
+            result["node"]["installed_npm"] = sorted(p for p in suggested_npm if p.lower() in global_npm)
+            result["node"]["missing_npm"] = [p for p in suggested_npm if p.lower() not in global_npm]
+            result["node"]["npm_available"] = True
+        else:
+            # 沒抓到任何全域套件 → npm 不存在或掃描失敗，無法判斷
+            result["node"]["installed_npm"] = []
+            result["node"]["missing_npm"] = []
+            result["node"]["npm_available"] = False
     return result
 
 
@@ -613,10 +689,12 @@ async def analyze_logs(count: int = 5):
     log_files = sorted(Path(LOG_DIR).glob("*.log"), key=lambda f: f.stat().st_mtime, reverse=True)[:count]
 
     missing: dict[str, dict] = {}  # module_name → { pip, files }
+    # 用 [^'\"\n] 阻止跨行貪婪匹配（避免 log 截斷造成的誤判：
+    # 例如 `No module named 'p...\n...next-line-has-quote` 不該匹配出 `p`）
     pattern = re.compile(
-        r"(?:ModuleNotFoundError:\s*No module named\s*['\"]([^'\"]+)['\"]"
-        r"|ImportError:\s*cannot import name\s*['\"]?\w+['\"]?\s*from\s*['\"]([^'\"]+)['\"]"
-        r"|ImportError:\s*No module named\s*['\"]([^'\"]+)['\"])"
+        r"(?:ModuleNotFoundError:\s*No module named\s*['\"]([^'\"\n]+)['\"]"
+        r"|ImportError:\s*cannot import name\s*['\"]?\w+['\"]?\s*from\s*['\"]([^'\"\n]+)['\"]"
+        r"|ImportError:\s*No module named\s*['\"]([^'\"\n]+)['\"])"
     )
 
     analyzed_files = []
@@ -626,6 +704,13 @@ async def analyze_logs(count: int = 5):
         for m in pattern.finditer(text):
             raw = m.group(1) or m.group(2) or m.group(3)
             top_module = raw.split(".")[0]
+            # 過濾無效結果：太短、非 identifier、以 "..." 結尾（log 截斷殘跡）
+            if (
+                len(top_module) < 3
+                or not top_module.isidentifier()
+                or raw.endswith("...")
+            ):
+                continue
             pip_name = _MODULE_TO_PIP.get(top_module, top_module)
             if top_module not in missing:
                 missing[top_module] = {"pip": pip_name, "files": []}
@@ -860,25 +945,107 @@ async def delete_pipeline_schedule(task_id: str):
 
 
 # ── Pipeline YAML Chat Assistant ─────────────────────────────
-_PIPELINE_SYSTEM = """你是 Pipeline YAML 設定助手。使用者會用自然語言描述他想自動化的工作流程。
+_PIPELINE_SYSTEM_BASE = """你是 Pipeline YAML 設定助手。使用者會用自然語言描述他想自動化的工作流程，你要產生正確可執行的 YAML。
 
-## 兩種步驟類型（最重要）
+## 三種節點類型
 
-本系統支援兩種節點：
-1. **腳本節點（script）**：使用者已經有寫好的腳本/指令 → `batch` 填路徑或指令
-2. **技能節點（skill）**：使用者沒有腳本，想請 AI 自動撰寫程式碼執行 → `batch` 填**自然語言任務描述**，並加 `skill_mode: true`
+本系統支援三種節點，依情境選用：
 
-**判斷原則**：
-- 若使用者提到「抓取某網站」「生成某檔案」「處理資料」但**沒提到現成腳本路徑** → 直接用 **skill 節點**，不要問腳本路徑！
-- 若使用者明確說「我有一個腳本在 xxx」或「跑我寫好的 yyy.py」 → 用 **script 節點**
-- 不確定就用 **skill 節點**（AI 會自己寫程式碼）
+### 1. 腳本節點（script）
+使用者已有寫好的腳本或指令 → `batch` 填指令字串。
+```yaml
+- name: 抓資料
+  batch: python ~/scripts/fetch.py --date=today
+  timeout: 300
+  retry: 2
+```
+
+### 2. AI 技能節點（skill）
+使用者沒有腳本，想請 AI 自動撰寫 Python 程式碼來完成任務 → `batch` 填自然語言任務描述，加 `skill_mode: true`。
+（以下範例 pipeline name 假設為 `monthly_report`，實際請套用本次工作流的 name）
+```yaml
+- name: 分析並匯出報告
+  skill_mode: true
+  batch: |
+    讀取 ai_output/monthly_report/raw.csv，依「部門」分組計算月均營收，
+    產出長條圖 + 摘要表格，存成 Excel。
+  timeout: 600
+  retry: 1
+  output:
+    path: ai_output/monthly_report/report.xlsx
+    ai_validation: true
+    description: "Excel 含長條圖與部門別摘要表"
+```
+
+#### 2a. AI 技能節點掛載 Agent Skill（進階）
+若使用者提及已安裝的 skill（例如 pptx、browser-automation），加 `skill: <name>` 把 SKILL.md 與子腳本注入 LLM prompt，顯著提升該任務的正確率。
+```yaml
+- name: 產出簡報
+  skill_mode: true
+  skill: pptx
+  batch: 把 ai_output/monthly_report/report.xlsx 的每個分頁轉成 PPT 簡報
+  timeout: 900
+  output:
+    path: ai_output/monthly_report/report.pptx
+```
+
+### 3. 人工確認節點（human_confirm）
+Pipeline 暫停等待人工確認，可透過 Telegram 或網頁 UI 回應。常用於審核關鍵輸出後再續跑。
+```yaml
+- name: 審核報告
+  human_confirm: true
+  message: 請確認上一步產出的報表內容是否正確
+  notify_telegram: true            # 預設 true
+  screenshot: false                # true 則 Telegram 會多一個「📸 截圖」按鈕
+  timeout: 3600                    # 等待秒數（預設 1 小時）
+```
+
+## 判斷節點類型的原則
+
+- 使用者說「抓網站 / 生成檔案 / 處理資料」但**沒提現成腳本** → **skill 節點**
+- 使用者說「我的 xxx.py 腳本」「執行 xxx 指令」 → **script 節點**
+- 使用者說「要人工審核」「確認後再繼續」 → **human_confirm 節點**（通常放在兩個處理節點中間）
+- 使用者提到特定檔案格式處理（PPT、PDF、瀏覽器自動化）且該 skill 已安裝 → skill 節點**加掛 `skill:`**
+
+## 常見組合模式
+
+### 純 AI 自動化：
+```
+skill(抓資料) → skill(處理) → skill(產出)
+```
+
+### 需人工審核：
+```
+skill(抓資料) → human_confirm(審核) → skill(處理) → skill(產出)
+```
+
+### 驗證模式（唯讀檢查）：
+在某個 skill 節點加 `readonly: true` 代表「只能讀取、不能修改」，適合做深度資料驗證。
+
+## YAML 欄位規則（所有節點共用）
+
+- `name`：步驟名稱（中文 OK，盡量有意義）
+- `timeout`：秒數。script 建議 300、skill 建議 600、human_confirm 建議 3600
+- `retry`：失敗自動重試次數，skill 節點建議 1-2
+- `working_dir`：可選。若 skill 要寫檔到特定目錄可指定；省略則用預設
+- `output.path`：預期產出檔案路徑。**本系統的預設輸出目錄是專案根目錄下的 `ai_output/<pipeline name>/`**，請用**相對路徑**寫：
+  * 正確：`ai_output/daily_news/tech_news.csv`（假設 pipeline name 是 `daily_news`）
+  * 錯誤：`~/ai_output/daily_news/tech_news.csv`（會寫到使用者家目錄，跟系統預設位置不同）
+  * 錯誤：`C:\\Users\\xxx\\...` 或 `/Users/xxx/...`（絕不寫絕對路徑或平台特定路徑）
+  * 錯誤：`tech_news.csv`（少了工作流子資料夾，會和其他 pipeline 混在一起）
+- 後續步驟讀取前一步產出的檔案時，也要用**同一個相對路徑**（`ai_output/<pipeline name>/xxx`）
+- `output.ai_validation: true` + `output.description`：AI 會驗證產出是否符合描述
+- `readonly: true`：唯讀驗證模式（skill 節點專用）
 
 ## 你的任務
 
-1. 資訊不足時用繁體中文反問，一次只問最重要的一個問題
-   - 對 skill 節點，只需問：任務目標、輸出檔案路徑（可選）、有無特殊要求
-   - **不要問使用者腳本路徑**除非他明確表示已有腳本
-2. 收集足夠資訊後輸出完整 YAML（必須包含 `YAML_READY` 標記）
+1. 資訊不足時用**繁體中文**反問，一次只問最關鍵的一個問題
+   - skill 節點：問任務目標、輸出檔案名/格式
+   - human_confirm 節點：通常不用問，看流程中是否有需要人工把關的點
+2. 資訊充足後輸出完整 YAML（**必須**包含 `YAML_READY` 標記）
+3. **先決定 pipeline 的 `name`**（英數底線，例如 `yahoo_news_to_excel`），所有 `output.path` 一律用**相對路徑** `ai_output/<這個 name>/檔名`，**不可省略中間的工作流子資料夾**，**不可加 `~/` 前綴**
+4. 後續步驟要讀取前一步檔案時，**用同一個相對路徑**（例如 step2 讀 step1 的 `ai_output/<name>/xxx`）
+5. 絕對不要寫 `~/`、`/Users/xxx/` 或 `C:\\Users\\xxx\\` 等任何絕對路徑
 
 ## 回覆格式
 
@@ -889,27 +1056,40 @@ YAML_READY
 pipeline:
   name: yahoo_news_to_excel
   steps:
-    - name: 抓取並匯出Excel
+    - name: 抓取並匯出
       skill_mode: true
       batch: |
-        到 Yahoo 新聞首頁抓取 10 則頭條新聞，
-        擷取每則的標題、內容摘要、來源網址，
-        製作成 Excel 檔案，欄位依序為：標題、摘要、來源網址。
+        到 Yahoo 新聞首頁抓 10 則頭條，
+        擷取標題、摘要、網址，輸出 Excel。
       timeout: 600
       retry: 2
       output:
-        path: /Users/hadytang/ai_output/yahoo_news.xlsx
-        expect: "Excel 檔案含 10 列新聞，三欄：標題、摘要、來源網址"
+        path: ai_output/yahoo_news_to_excel/yahoo_news.xlsx
+        ai_validation: true
+        description: "Excel 含 10 列、三欄：標題、摘要、網址"
 ```
+"""
 
-## YAML 欄位規則
 
-- **skill_mode: true** → `batch` 為自然語言任務描述（多行用 `|`），AI 會自動寫 Python 程式碼
-- **skill_mode 省略或 false** → `batch` 為 shell 指令或腳本路徑
-- `timeout`：秒數，skill 節點建議 600，script 節點建議 300
-- `retry`：失敗自動重試次數，建議 1-3
-- `output.path`：預期產出的檔案絕對路徑（沒有就省略整個 `output`）
-- `output.expect`：自然語言描述「正確輸出長什麼樣子」，供 AI 驗證"""
+def _build_pipeline_system_prompt() -> str:
+    """組裝 AI 助手 system prompt：底稿 + 動態注入已安裝的 Agent Skills 清單。"""
+    base = _PIPELINE_SYSTEM_BASE
+    try:
+        from skill_scanner import list_available_skills
+        skills = list_available_skills()
+        if skills:
+            lines = ["", "## 使用者已安裝的 Agent Skills（掛載時請用 display_name）：", ""]
+            for s in skills:
+                desc = (s.get("description") or "").strip()
+                if len(desc) > 120:
+                    desc = desc[:120] + "…"
+                lines.append(f"- **{s['display_name']}**：{desc}")
+            lines.append("")
+            lines.append("使用者任務若與上述 skill 相關，**優先建議掛載對應 skill**（YAML 加 `skill: <display_name>`）。")
+            return base + "\n".join(lines)
+    except Exception:
+        pass
+    return base
 
 
 class PipelineChatRequest(BaseModel):
@@ -923,7 +1103,7 @@ async def pipeline_chat(req: PipelineChatRequest):
     import re
 
     llm = build_llm(temperature=0.3)
-    lc_messages = [SystemMessage(content=_PIPELINE_SYSTEM)]
+    lc_messages = [SystemMessage(content=_build_pipeline_system_prompt())]
     for m in req.messages:
         cls = HumanMessage if m["role"] == "user" else AIMessage
         lc_messages.append(cls(content=m["content"]))
@@ -944,12 +1124,22 @@ async def pipeline_chat(req: PipelineChatRequest):
         content = str(raw) if raw is not None else ""
     has_yaml = "YAML_READY" in content
     yaml_content = None
+    yaml_error = None
     if has_yaml:
         match = re.search(r"```yaml\n([\s\S]+?)```", content)
         if match:
             yaml_content = match.group(1).strip()
+            # ── 語法驗證：試跑 PipelineConfig.from_dict 檢查 schema ──
+            try:
+                import yaml as _yaml
+                from pipeline.models import PipelineConfig
+                parsed = _yaml.safe_load(yaml_content) or {}
+                raw_cfg = parsed.get("pipeline", parsed)
+                PipelineConfig.from_dict({k: v for k, v in raw_cfg.items() if not str(k).startswith("_")})
+            except Exception as e:
+                yaml_error = f"YAML 語法/結構錯誤：{type(e).__name__}：{str(e)[:300]}"
 
-    return {"reply": content, "has_yaml": has_yaml, "yaml_content": yaml_content}
+    return {"reply": content, "has_yaml": has_yaml, "yaml_content": yaml_content, "yaml_error": yaml_error}
 
 
 # ── Helpers ──────────────────────────────────────────────────

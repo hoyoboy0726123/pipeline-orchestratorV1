@@ -387,25 +387,28 @@ def _run_python_sync(code: str) -> str:
         code = code[:tool_tag_pos].rstrip()
     # 注入 done/view_image/read_file 的 no-op stub，避免 LLM 把工具名當 Python 函式呼叫而崩潰
     preamble = (
+        "# -*- coding: utf-8 -*-\n"
         "import warnings\n"
         "warnings.filterwarnings('ignore')\n"
         "def done(*args, **kwargs):\n"
-        "    print('[info] done() is a tool, not a Python function — ignored')\n"
+        "    print('[info] done() is a tool, not a Python function - ignored')\n"
         "def view_image(*args, **kwargs):\n"
-        "    print('[info] view_image() is a tool, not a Python function — ignored')\n"
+        "    print('[info] view_image() is a tool, not a Python function - ignored')\n"
         "def read_file(*args, **kwargs):\n"
-        "    print('[info] read_file() is a tool, not a Python function — ignored')\n"
+        "    print('[info] read_file() is a tool, not a Python function - ignored')\n"
     )
     code = preamble + code
     try:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        # UTF-8 寫檔（見 executor.py 同樣 fix 的註解）
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
             f.write(code)
             tmp_path = f.name
-        from pipeline.executor import _SKILL_PYTHON
+        from pipeline.executor import _SKILL_PYTHON, _clean_env
         result = subprocess.run(
             [_SKILL_PYTHON, tmp_path],
             capture_output=True, text=True,
             timeout=SKILL_TOOL_TIMEOUT,
+            env=_clean_env(),  # 套用 PYTHONIOENCODING=utf-8 防中文 print 爆炸
         )
         Path(tmp_path).unlink(missing_ok=True)
         output = ""
@@ -766,7 +769,8 @@ Exit Code：{exit_code}
             reply = (await invoke_with_streaming(
                 llm, messages, label=f"validator:{step_name}", timeout=180.0, logger=logger
             )).strip()
-            logger.debug(f"[{step_name}] Agent 回覆：{reply[:200]}...")
+            _vp = reply if len(reply) <= 4000 else reply[:4000] + f"...[已截斷，完整長度 {len(reply)} 字]"
+            logger.debug(f"[{step_name}] Agent 回覆：\n{_vp}")
 
             # 解析工具呼叫
             tool_calls = _parse_tool_calls(reply)
@@ -841,7 +845,8 @@ Exit Code：{exit_code}
             tool_result = await asyncio.get_event_loop().run_in_executor(
                 None, _execute_tool, tool_name, tool_input
             )
-            logger.debug(f"[{step_name}] 工具結果：{tool_result[:200]}...")
+            _vt = tool_result if len(tool_result) <= 3000 else tool_result[:3000] + f"...[已截斷，完整長度 {len(tool_result)} 字]"
+            logger.debug(f"[{step_name}] 工具結果：\n{_vt}")
 
             # 加入對話歷史
             messages.append(HumanMessage(content=reply))

@@ -2,6 +2,42 @@ import type { OutputFormat, StepEvent, ScheduledTask, FileItem, OpenCLICategory,
 
 const BASE = '/api/backend'
 
+/**
+ * 長時間請求（如 LLM chat）專用的後端 URL：繞過 Next.js dev 的 rewrite proxy
+ * 原因：Next.js rewrite 走 http-proxy，預設 socket timeout ~30s，超時就回 500
+ * 只在瀏覽器端且後端在 localhost 時啟用；後端已配置 CORS 允許 3002
+ */
+const DIRECT_BASE = (() => {
+  if (typeof window === 'undefined') return BASE
+  const { hostname } = window.location
+  if (hostname === 'localhost' || hostname === '127.0.0.1') return 'http://localhost:8000'
+  return BASE
+})()
+
+/**
+ * fetch wrapper：對 5xx / network 錯誤做指數退避重試
+ * 延遲序列 400ms → 1200ms → 2500ms（總等候 ~4s），覆蓋典型 uvicorn 熱重載空窗
+ * 原因：Next.js dev proxy 在後端 .py 編輯觸發 uvicorn reload 的 2-5 秒內會回 500/502
+ * 只對 idempotent 操作使用；4xx 不重試（客戶端錯誤）
+ */
+export async function fetchWithRetry(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const delays = [400, 1200, 2500]
+  const tryOnce = async () => {
+    try { return await fetch(input, init) } catch { return null }
+  }
+  let res = await tryOnce()
+  for (const delay of delays) {
+    if (res && res.ok) return res
+    const status = res?.status ?? 0
+    const shouldRetry = !res || (status >= 500 && status < 600)
+    if (!shouldRetry) return res!
+    await new Promise(r => setTimeout(r, delay))
+    res = await tryOnce()
+  }
+  if (res) return res
+  throw new Error('後端連線失敗（請確認 uvicorn 是否在運行）')
+}
+
 // ── Chat / Run ──────────────────────────────────────────────
 export async function* streamTask(
   task: string,
@@ -115,7 +151,7 @@ export interface AvailableSkill {
   has_requirements?: boolean
 }
 export async function listAvailableSkills(): Promise<{ skills_root: string; exists: boolean; skills: AvailableSkill[] }> {
-  const res = await fetch(`${BASE}/skills/available`)
+  const res = await fetchWithRetry(`${BASE}/skills/available`)
   if (!res.ok) throw new Error('載入 Skill 清單失敗')
   return res.json()
 }
@@ -134,10 +170,15 @@ export interface SkillDependencies {
   node?: {
     package_json: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> } | null
     needs_npm_install: boolean
+    suggested_npm?: string[]
+    installed_npm?: string[]
+    missing_npm?: string[]
+    npm_available?: boolean
   }
+  system_tools?: string[]
 }
 export async function scanSkillDependencies(displayName: string): Promise<SkillDependencies> {
-  const res = await fetch(`${BASE}/skills/${encodeURIComponent(displayName)}/dependencies`)
+  const res = await fetchWithRetry(`${BASE}/skills/${encodeURIComponent(displayName)}/dependencies`)
   if (!res.ok) throw new Error('掃描依賴失敗')
   return res.json()
 }
@@ -184,13 +225,14 @@ export async function getOpenCLIStatus(): Promise<OpenCLIStatus> {
 
 // ── Pipeline ─────────────────────────────────────────────────
 export async function getPipelineRuns(): Promise<PipelineRun[]> {
-  const res = await fetch(`${BASE}/pipeline/runs`)
+  const res = await fetchWithRetry(`${BASE}/pipeline/runs`)
+  if (!res.ok) return []
   const data = await res.json()
   return data.runs ?? []
 }
 
 export async function getPipelineRun(runId: string): Promise<PipelineRun> {
-  const res = await fetch(`${BASE}/pipeline/runs/${runId}`)
+  const res = await fetchWithRetry(`${BASE}/pipeline/runs/${runId}`)
   if (!res.ok) throw new Error('找不到 pipeline run')
   return res.json()
 }
@@ -251,7 +293,8 @@ export async function getPipelineLog(runId: string): Promise<{ log: string }> {
 }
 
 export async function getPipelineScheduled(): Promise<ScheduledTask[]> {
-  const res = await fetch(`${BASE}/pipeline/scheduled`)
+  const res = await fetchWithRetry(`${BASE}/pipeline/scheduled`)
+  if (!res.ok) return []
   const data = await res.json()
   return data.tasks ?? []
 }
@@ -321,7 +364,7 @@ export interface AvailableModels {
 }
 
 export async function getModelSettings(): Promise<ModelSettings> {
-  const res = await fetch(`${BASE}/settings/model`)
+  const res = await fetchWithRetry(`${BASE}/settings/model`)
   if (!res.ok) throw new Error('讀取設定失敗')
   return res.json()
 }
@@ -340,7 +383,9 @@ export async function saveModelSettings(s: ModelSettings): Promise<ModelSettings
 }
 
 export async function getAvailableModels(): Promise<AvailableModels> {
-  const res = await fetch(`${BASE}/settings/models/available`)
+  // 用 DIRECT_BASE 繞過 Next.js proxy：此端點要打 4 個外部 API（Groq/Gemini/OpenRouter/Ollama）
+  // 經常 10 秒以上，走 proxy 容易碰到 reload 空窗或 timeout
+  const res = await fetchWithRetry(`${DIRECT_BASE}/settings/models/available`)
   if (!res.ok) throw new Error('讀取模型清單失敗')
   return res.json()
 }
@@ -352,8 +397,22 @@ export interface SkillPackage {
   version: string
 }
 
+export interface NodeStatus {
+  node_installed: boolean
+  node_version: string
+  npm_installed: boolean
+  npm_version: string
+  install_hint: string
+}
+
+export async function getNodeStatus(): Promise<NodeStatus> {
+  const res = await fetchWithRetry(`${BASE}/settings/node-status`)
+  if (!res.ok) throw new Error('讀取 Node.js 狀態失敗')
+  return res.json()
+}
+
 export async function getSkillPackages(): Promise<SkillPackage[]> {
-  const res = await fetch(`${BASE}/settings/skill-packages`)
+  const res = await fetchWithRetry(`${BASE}/settings/skill-packages`)
   if (!res.ok) throw new Error('讀取套件清單失敗')
   const data = await res.json()
   return data.packages
@@ -381,7 +440,7 @@ export async function removeSkillPackage(name: string): Promise<string> {
 
 export interface UnlistedPackage { name: string; version: string }
 export async function scanUnlistedPackages(): Promise<UnlistedPackage[]> {
-  const res = await fetch(`${BASE}/settings/skill-packages/unlisted`)
+  const res = await fetchWithRetry(`${BASE}/settings/skill-packages/unlisted`)
   if (!res.ok) throw new Error('掃描 venv 失敗')
   const data = await res.json()
   return data.packages
@@ -410,26 +469,26 @@ export interface WorkflowData {
 }
 
 export async function listWorkflows(): Promise<WorkflowData[]> {
-  const res = await fetch(`${BASE}/workflows`)
+  const res = await fetchWithRetry(`${BASE}/workflows`)
   if (!res.ok) throw new Error('讀取工作流失敗')
   return res.json()
 }
 
 export async function createWorkflowApi(name: string = '新工作流', canvas?: { nodes: any[]; edges: any[] }, validate = false): Promise<WorkflowData> {
-  const res = await fetch(`${BASE}/workflows`, {
+  const res = await fetchWithRetry(`${BASE}/workflows`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, canvas, validate }),
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
-    throw new Error(`建立工作流失敗 (${res.status}): ${detail}`)
+    throw new Error(`建立工作流失敗 (${res.status}): ${detail || '後端暫時無回應，請稍後再試'}`)
   }
   return res.json()
 }
 
 export async function updateWorkflowApi(id: string, patch: { name?: string; canvas?: any; validate?: boolean; yaml?: string }): Promise<WorkflowData> {
-  const res = await fetch(`${BASE}/workflows/${id}`, {
+  const res = await fetchWithRetry(`${BASE}/workflows/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
@@ -439,7 +498,7 @@ export async function updateWorkflowApi(id: string, patch: { name?: string; canv
 }
 
 export async function deleteWorkflowApi(id: string, cascade = true): Promise<void> {
-  const res = await fetch(`${BASE}/workflows/${id}?cascade=${cascade}`, { method: 'DELETE' })
+  const res = await fetchWithRetry(`${BASE}/workflows/${id}?cascade=${cascade}`, { method: 'DELETE' })
   if (!res.ok) throw new Error('刪除工作流失敗')
 }
 
@@ -524,7 +583,7 @@ export interface NotificationSettings {
 }
 
 export async function getNotificationSettings(): Promise<NotificationSettings> {
-  const res = await fetch(`${BASE}/settings/notifications`)
+  const res = await fetchWithRetry(`${BASE}/settings/notifications`)
   if (!res.ok) throw new Error('讀取通知設定失敗')
   return res.json()
 }
@@ -543,12 +602,19 @@ export async function pipelineChat(messages: Array<{ role: 'user' | 'assistant';
   reply: string
   has_yaml: boolean
   yaml_content: string | null
+  yaml_error?: string | null
 }> {
-  const res = await fetch(`${BASE}/pipeline/chat`, {
+  // 使用 DIRECT_BASE 繞過 Next.js dev rewrite proxy 的 ~30s socket timeout
+  // （LLM 回應經常 30-60s；走 proxy 會被截斷回 500）
+  // 不用 fetchWithRetry：觸發 LLM 有金流/速率成本，失敗讓使用者手動重送
+  const res = await fetch(`${DIRECT_BASE}/pipeline/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages }),
   })
-  if (!res.ok) throw new Error('AI 回應失敗')
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(detail ? `AI 回應失敗 (${res.status}): ${detail.slice(0, 200)}` : 'AI 回應失敗（請確認後端 uvicorn 在執行）')
+  }
   return res.json()
 }

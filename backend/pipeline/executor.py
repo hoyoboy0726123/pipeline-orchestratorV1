@@ -190,6 +190,9 @@ def _clean_env() -> dict:
             paths = [p for p in paths if p != skill_dir]
             paths.insert(0, skill_dir)
     env["PATH"] = os.pathsep.join(paths)
+    # 強制 stdout/stderr 用 UTF-8 編碼，避免 Windows cp1252/cp950 遇到中文 print() 炸出 UnicodeEncodeError
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"  # Python 3.7+ UTF-8 mode 全域啟用
     return env
 
 
@@ -365,21 +368,26 @@ def _skill_run_python(code: str, cwd: Optional[str] = None, run_id: str = "") ->
         code = code[:tool_tag_pos].rstrip()
     # 注入 done / view_image / read_file 的 no-op stub，避免 LLM 把工具名當 Python 函式呼叫而崩潰
     # 另外抑制所有 warnings，避免 pandas FutureWarning 等雜訊污染 stderr 害 LLM 誤以為失敗
+    # 第一行必須是 UTF-8 encoding 宣告（PEP 263）：即使我們用 UTF-8 寫檔，也保險讓 Python 明確識別
     preamble = (
+        "# -*- coding: utf-8 -*-\n"
         "import warnings\n"
         "warnings.filterwarnings('ignore')\n"
         "def done(*args, **kwargs):\n"
-        "    print('[info] done() is a tool, not a Python function — ignored in script context')\n"
+        "    print('[info] done() is a tool, not a Python function - ignored in script context')\n"
         "def view_image(*args, **kwargs):\n"
-        "    print('[info] view_image() is a tool, not a Python function — ignored')\n"
+        "    print('[info] view_image() is a tool, not a Python function - ignored')\n"
         "def read_file(*args, **kwargs):\n"
-        "    print('[info] read_file() is a tool, not a Python function — ignored')\n"
+        "    print('[info] read_file() is a tool, not a Python function - ignored')\n"
     )
     code = preamble + code
     tmp_path = None
     proc = None
     try:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        # 必須明確指定 UTF-8 編碼，否則 Windows 會用系統 locale（cp950/cp1252）寫檔，
+        # LLM 的程式碼只要含任何非該 locale 的字元（中文註解、em dash 等）就會產生
+        # "Non-UTF-8 code starting with '\\xXX'" SyntaxError
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
             f.write(code)
             tmp_path = f.name
         proc = subprocess.Popen(
@@ -1036,7 +1044,9 @@ async def execute_step_with_skill(
             reply = (await invoke_with_streaming(
                 llm, messages, label=step_name, timeout=600.0, logger=logger
             )).strip()
-            logger.debug(f"[{step_name}] Agent：{reply[:300]}...")
+            # 完整記錄 LLM 回覆（含程式碼），避免 log 截斷讓後續分析誤判
+            _reply_preview = reply if len(reply) <= 4000 else reply[:4000] + f"...[已截斷，完整長度 {len(reply)} 字]"
+            logger.debug(f"[{step_name}] Agent 回覆：\n{_reply_preview}")
 
             # 偵錯：如果 reply 包含 done，印出 done 附近的文字
             if 'done' in reply.lower():
@@ -1185,7 +1195,9 @@ async def execute_step_with_skill(
             tool_result = await asyncio.get_event_loop().run_in_executor(
                 None, lambda tn=tool_name, ti=tool_input: _execute_skill_tool(tn, ti, cwd=working_dir, run_id=run_id)
             )
-            logger.debug(f"[{step_name}] 工具結果：{tool_result[:300]}...")
+            # 完整記錄工具結果（錯誤訊息如 ModuleNotFoundError 常超過 300 字）
+            _tr_preview = tool_result if len(tool_result) <= 3000 else tool_result[:3000] + f"...[已截斷，完整長度 {len(tool_result)} 字]"
+            logger.debug(f"[{step_name}] 工具結果：\n{_tr_preview}")
             all_stdout.append(f"[{tool_name}] {tool_result}")
             # 記錄成功的 run_python 供 Recipe Book 快取
             if tool_name == "run_python" and "[exit code:" not in tool_result:
